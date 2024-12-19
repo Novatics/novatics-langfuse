@@ -14,7 +14,7 @@ services:
     ports:
       - "3030:3030"
     environment: &langfuse-worker-env
-      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/postgres}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-postgres}}
       SALT: ${SALT:-mysalt}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000} # generate via `openssl rand -hex 32`
       TELEMETRY_ENABLED: ${TELEMETRY_ENABLED:-true}
@@ -52,7 +52,7 @@ services:
       - "${LANGFUSE_WEB_PORT:-3000}:3000"
     environment:
       <<: *langfuse-worker-env
-      NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
+      NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:${LANGFUSE_WEB_PORT:-3000}}
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-mysecret}
       LANGFUSE_INIT_ORG_ID: ${LANGFUSE_INIT_ORG_ID:-}
       LANGFUSE_INIT_ORG_NAME: ${LANGFUSE_INIT_ORG_NAME:-}
@@ -130,16 +130,17 @@ services:
     image: postgres:${POSTGRES_VERSION:-latest}
     restart: always
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-postgres} " ]
       interval: 3s
       timeout: 3s
       retries: 10
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: postgres
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
     ports:
-      - ${POSTGRES_REDIRECT_PORT:-5432}:5432
+      - ${POSTGRES_REDIRECT_PORT:-5432}:${POSTGRES_PORT:-5432}
     volumes:
       - langfuse_postgres_data:/var/lib/postgresql/data
 
