@@ -40,6 +40,7 @@ yarn-error.log*
 !.env.dev.example
 !.env.dev-azure.example
 !.env.prod.example
+!.env.novatics
 
 # vercel
 .vercel
