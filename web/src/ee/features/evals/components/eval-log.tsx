@@ -8,8 +8,8 @@ import { IOTableCell } from "@/src/components/ui/CodeJsonViewer";
 import useColumnOrder from "@/src/features/column-visibility/hooks/useColumnOrder";
 import useColumnVisibility from "@/src/features/column-visibility/hooks/useColumnVisibility";
 import { type RouterOutputs, api } from "@/src/utils/api";
+import { type Prisma } from "@langfuse/shared";
 import { createColumnHelper } from "@tanstack/react-table";
-import { type ReactNode } from "react";
 import { useQueryParams, withDefault, NumberParam } from "use-query-params";
 
 export type JobExecutionRow = {
@@ -17,6 +17,7 @@ export type JobExecutionRow = {
   scoreName?: string;
   scoreValue?: number;
   scoreComment?: string;
+  scoreMetadata?: Prisma.JsonValue;
   startTime?: string;
   endTime?: string;
   traceId?: string;
@@ -28,11 +29,9 @@ export type JobExecutionRow = {
 export default function EvalLogTable({
   projectId,
   jobConfigurationId,
-  menuItems,
 }: {
   projectId: string;
   jobConfigurationId?: string;
-  menuItems?: ReactNode;
 }) {
   const [rowHeight, setRowHeight] = useRowHeightLocalStorage("evalLogs", "s");
   const [paginationState, setPaginationState] = useQueryParams({
@@ -172,6 +171,7 @@ export default function EvalLogTable({
       scoreName: jobConfig.score?.name ?? undefined,
       scoreValue: jobConfig.score?.value ?? undefined,
       scoreComment: jobConfig.score?.comment ?? undefined,
+      scoreMetadata: jobConfig.score?.metadata ?? undefined,
       startTime: jobConfig.startTime?.toLocaleString() ?? undefined,
       endTime: jobConfig.endTime?.toLocaleString() ?? undefined,
       traceId: jobConfig.jobInputTraceId ?? undefined,
@@ -191,7 +191,6 @@ export default function EvalLogTable({
         setColumnOrder={setColumnOrder}
         rowHeight={rowHeight}
         setRowHeight={setRowHeight}
-        actionButtons={menuItems}
       />
       <DataTable
         columns={columns}

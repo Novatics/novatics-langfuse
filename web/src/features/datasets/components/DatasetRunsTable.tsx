@@ -6,7 +6,7 @@ import { api } from "@/src/utils/api";
 import { formatIntervalSeconds } from "@/src/utils/dates";
 import { useQueryParams, withDefault, NumberParam } from "use-query-params";
 import { type RouterOutput } from "@/src/utils/types";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { usdFormatter } from "../../../utils/numbers";
 import { DataTableToolbar } from "@/src/components/table/data-table-toolbar";
 import useColumnVisibility from "@/src/features/column-visibility/hooks/useColumnVisibility";
@@ -14,12 +14,13 @@ import { type Prisma } from "@langfuse/shared";
 import { useRowHeightLocalStorage } from "@/src/components/table/data-table-row-height-switch";
 import { IOTableCell } from "@/src/components/ui/CodeJsonViewer";
 import {
+  getScoreDataTypeIcon,
   getScoreGroupColumnProps,
   verifyAndPrefixScoreDataAgainstKeys,
 } from "@/src/features/scores/components/ScoreDetailColumnHelpers";
 import { type ScoreAggregate } from "@langfuse/shared";
 import { useIndividualScoreColumns } from "@/src/features/scores/hooks/useIndividualScoreColumns";
-import { ChevronDown, Columns3, MoreVertical } from "lucide-react";
+import { ChevronDown, Columns3, MoreVertical, Trash } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -33,19 +34,41 @@ import useColumnOrder from "@/src/features/column-visibility/hooks/useColumnOrde
 import { Checkbox } from "@/src/components/ui/checkbox";
 import { type RowSelectionState } from "@tanstack/react-table";
 import Link from "next/link";
-import { useClickhouse } from "@/src/components/layouts/ClickhouseAdminToggle";
 import { joinTableCoreAndMetrics } from "@/src/components/table/utils/joinTableCoreAndMetrics";
 import { Skeleton } from "@/src/components/ui/skeleton";
+import {
+  RESOURCE_METRICS,
+  transformAggregatedRunMetricsToChartData,
+} from "@/src/features/dashboard/lib/score-analytics-utils";
+import { TimeseriesChart } from "@/src/features/scores/components/TimeseriesChart";
+import { CompareViewAdapter } from "@/src/features/scores/adapters";
+import { isNumericDataType } from "@/src/features/scores/lib/helpers";
+import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePostHogClientCapture";
+import { LocalIsoDate } from "@/src/components/LocalIsoDate";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/src/components/ui/dialog";
+import {
+  ResizablePanelGroup,
+  ResizablePanel,
+  ResizableHandle,
+} from "@/src/components/ui/resizable";
+import useSessionStorage from "@/src/components/useSessionStorage";
 
 export type DatasetRunRowData = {
   id: string;
   name: string;
-  createdAt: string;
+  createdAt: Date;
   countRunItems: string;
   avgLatency: number | undefined;
   avgTotalCost: string | undefined;
   // scores holds grouped column with individual scores
-  scores?: ScoreAggregate | undefined;
+  runItemScores?: ScoreAggregate | undefined;
+  runScores?: ScoreAggregate | undefined;
   description: string;
   metadata: Prisma.JsonValue;
 };
@@ -54,22 +77,38 @@ const DatasetRunTableMultiSelectAction = ({
   selectedRunIds,
   projectId,
   datasetId,
+  setRowSelection,
 }: {
   selectedRunIds: string[];
   projectId: string;
   datasetId: string;
+  setRowSelection: (value: Record<string, boolean>) => void;
 }) => {
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+  const capture = usePostHogClientCapture();
+  const utils = api.useUtils();
+  const mutDelete = api.datasets.deleteDatasetRuns.useMutation({
+    onSuccess: () => {
+      utils.datasets.invalidate();
+      setRowSelection({});
+    },
+  });
+
   return (
     <>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button disabled={selectedRunIds.length < 1}>
+          <Button
+            disabled={selectedRunIds.length < 1}
+            onClick={() => capture("dataset_run:compare_view_click")}
+          >
             Actions ({selectedRunIds.length} selected)
             <ChevronDown className="h-5 w-5" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent>
+        <DropdownMenuContent key="dropdown-menu-content">
           <Link
+            key="compare"
             href={
               selectedRunIds.length < 2
                 ? "#"
@@ -84,8 +123,52 @@ const DatasetRunTableMultiSelectAction = ({
               <span>Compare</span>
             </DropdownMenuItem>
           </Link>
+          <DropdownMenuItem
+            key="delete"
+            onClick={() => setIsDeleteDialogOpen(true)}
+          >
+            <Trash className="mr-2 h-4 w-4" />
+            <span>Delete</span>
+          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+
+      <Dialog
+        key="delete-dialog"
+        open={isDeleteDialogOpen}
+        onOpenChange={(isOpen) => {
+          if (!mutDelete.isLoading) {
+            setIsDeleteDialogOpen(isOpen);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle className="mb-4">Please confirm</DialogTitle>
+            <DialogDescription className="text-md p-0">
+              This action cannot be undone and removes all the data associated
+              with {selectedRunIds.length} dataset run
+              {selectedRunIds.length > 1 ? "s" : ""}.
+            </DialogDescription>
+          </DialogHeader>
+          <Button
+            variant="destructive"
+            loading={mutDelete.isLoading}
+            disabled={mutDelete.isLoading}
+            onClick={async (event) => {
+              event.preventDefault();
+              capture("dataset_run:delete_form_submit");
+              await mutDelete.mutateAsync({
+                projectId,
+                datasetRunIds: selectedRunIds,
+              });
+              setIsDeleteDialogOpen(false);
+            }}
+          >
+            Delete Dataset Runs
+          </Button>
+        </DialogContent>
+      </Dialog>
     </>
   );
 };
@@ -93,7 +176,8 @@ const DatasetRunTableMultiSelectAction = ({
 export function DatasetRunsTable(props: {
   projectId: string;
   datasetId: string;
-  menuItems?: React.ReactNode;
+  selectedMetrics: string[];
+  setScoreOptions: (options: { key: string; value: string }[]) => void;
 }) {
   const [paginationState, setPaginationState] = useQueryParams({
     pageIndex: withDefault(NumberParam, 0),
@@ -105,12 +189,20 @@ export function DatasetRunsTable(props: {
     "datasetRuns",
     "s",
   );
+
+  // Add panel size state with default size of 30%
+  const [chartsPanelSize, setChartsPanelSize] = useSessionStorage<number>(
+    "dataset-runs-charts-panel-size",
+    30,
+  );
+
+  const { setScoreOptions } = props;
+
   const runs = api.datasets.runsByDatasetId.useQuery({
     projectId: props.projectId,
     datasetId: props.datasetId,
     page: paginationState.pageIndex,
     limit: paginationState.pageSize,
-    queryClickhouse: useClickhouse(),
   });
 
   const runsMetrics = api.datasets.runsByDatasetIdMetrics.useQuery({
@@ -118,7 +210,6 @@ export function DatasetRunsTable(props: {
     datasetId: props.datasetId,
     page: paginationState.pageIndex,
     limit: paginationState.pageSize,
-    queryClickhouse: useClickhouse(),
   });
 
   type DatasetsCoreOutput =
@@ -142,12 +233,62 @@ export function DatasetRunsTable(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runs.isSuccess, runs.data]);
 
+  const runScoresKeysAndProps =
+    api.datasets.getRunLevelScoreKeysAndProps.useQuery({
+      projectId: props.projectId,
+      datasetId: props.datasetId,
+    });
+
   const { scoreColumns, scoreKeysAndProps, isColumnLoading } =
     useIndividualScoreColumns<DatasetRunRowData>({
       projectId: props.projectId,
-      scoreColumnKey: "scores",
-      showAggregateViewOnly: true,
+      scoreColumnKey: "runItemScores",
+      showAggregateViewOnly: false,
+      scoreColumnPrefix: "Aggregated",
     });
+
+  const {
+    scoreColumns: runScoreColumns,
+    scoreKeysAndProps: runScoreKeysAndProps,
+    isColumnLoading: isRunScoreColumnLoading,
+  } = useIndividualScoreColumns<DatasetRunRowData>({
+    projectId: props.projectId,
+    scoreColumnKey: "runScores",
+    showAggregateViewOnly: false,
+    scoreColumnPrefix: "Run-level",
+    scoreKeysAndPropsData: runScoresKeysAndProps.data,
+  });
+
+  const scoreIdToName = useMemo(() => {
+    return new Map(scoreKeysAndProps.map((obj) => [obj.key, obj.name]) ?? []);
+  }, [scoreKeysAndProps]);
+
+  const runAggregatedMetrics = useMemo(() => {
+    return transformAggregatedRunMetricsToChartData(
+      runsMetrics.data?.runs ?? [],
+      scoreIdToName,
+    );
+  }, [runsMetrics.data, scoreIdToName]);
+
+  const { scoreAnalyticsOptions, scoreKeyToData } = useMemo(() => {
+    const scoreAnalyticsOptions = scoreKeysAndProps
+      ? scoreKeysAndProps.map(({ key, name, dataType, source }) => ({
+          key,
+          value: `${getScoreDataTypeIcon(dataType)} ${name} (${source.toLowerCase()})`,
+        }))
+      : [];
+
+    return {
+      scoreAnalyticsOptions,
+      scoreKeyToData: new Map(
+        scoreKeysAndProps.map((obj) => [obj.key, obj]) ?? [],
+      ),
+    };
+  }, [scoreKeysAndProps]);
+
+  useEffect(() => {
+    setScoreOptions(scoreAnalyticsOptions);
+  }, [scoreAnalyticsOptions, setScoreOptions]);
 
   const columns: LangfuseColumnDef<DatasetRunRowData>[] = [
     {
@@ -263,13 +404,32 @@ export function DatasetRunsTable(props: {
         return <>{avgTotalCost}</>;
       },
     },
-    { ...getScoreGroupColumnProps(isColumnLoading), columns: scoreColumns },
+    {
+      ...getScoreGroupColumnProps(isRunScoreColumnLoading, {
+        accessorKey: "runScores",
+        header: "Run-level Scores",
+        id: "runScores",
+      }),
+      columns: runScoreColumns,
+    },
+    {
+      ...getScoreGroupColumnProps(isColumnLoading, {
+        accessorKey: "runItemScores",
+        header: "Aggregated Run Items Scores",
+        id: "runItemScores",
+      }),
+      columns: scoreColumns,
+    },
     {
       accessorKey: "createdAt",
       header: "Created",
       id: "createdAt",
       size: 150,
       enableHiding: true,
+      cell: ({ row }) => {
+        const value: DatasetRunRowData["createdAt"] = row.getValue("createdAt");
+        return <LocalIsoDate date={value} />;
+      },
     },
     {
       accessorKey: "metadata",
@@ -306,7 +466,6 @@ export function DatasetRunsTable(props: {
               <DeleteDatasetRunButton
                 projectId={props.projectId}
                 datasetRunId={id}
-                fullWidth
               />
             </DropdownMenuContent>
           </DropdownMenu>
@@ -316,19 +475,30 @@ export function DatasetRunsTable(props: {
   ];
 
   const convertToTableRow = (
-    item: RouterOutput["datasets"]["runsByDatasetId"]["runs"][number],
+    item: DatasetsCoreOutput & Partial<DatasetsMetricOutput>,
   ): DatasetRunRowData => {
     return {
       id: item.id,
       name: item.name,
-      createdAt: item.createdAt.toLocaleString(),
+      createdAt: item.createdAt,
       countRunItems: item.countRunItems.toString(),
       avgLatency: item.avgLatency,
       avgTotalCost: item.avgTotalCost
         ? usdFormatter(item.avgTotalCost.toNumber())
         : undefined,
-      scores: item.scores
-        ? verifyAndPrefixScoreDataAgainstKeys(scoreKeysAndProps, item.scores)
+      runItemScores: item.scores
+        ? verifyAndPrefixScoreDataAgainstKeys(
+            scoreKeysAndProps,
+            item.scores,
+            "Aggregated",
+          )
+        : undefined,
+      runScores: item.runScores
+        ? verifyAndPrefixScoreDataAgainstKeys(
+            runScoreKeysAndProps,
+            item.runScores,
+            "Run-level",
+          )
         : undefined,
       description: item.description ?? "",
       metadata: item.metadata,
@@ -346,64 +516,198 @@ export function DatasetRunsTable(props: {
     columns,
   );
 
+  // Check if we have charts to display
+  const hasCharts =
+    Boolean(props.selectedMetrics.length) &&
+    Boolean(runAggregatedMetrics?.size);
+
   return (
     <>
-      <DataTableToolbar
-        columns={columns}
-        columnVisibility={columnVisibility}
-        setColumnVisibility={setColumnVisibility}
-        columnOrder={columnOrder}
-        setColumnOrder={setColumnOrder}
-        rowHeight={rowHeight}
-        setRowHeight={setRowHeight}
-        actionButtons={[
-          props.menuItems,
-          Object.keys(selectedRows).filter((runId) =>
-            runs.data?.runs.map((run) => run.id).includes(runId),
-          ).length > 0 ? (
-            <DatasetRunTableMultiSelectAction
-              // Exclude items that are not in the current page
-              selectedRunIds={Object.keys(selectedRows).filter((runId) =>
-                runs.data?.runs.map((run) => run.id).includes(runId),
-              )}
-              projectId={props.projectId}
-              datasetId={props.datasetId}
+      {hasCharts ? (
+        <ResizablePanelGroup
+          direction="vertical"
+          className="h-full"
+          onLayout={(sizes) => {
+            setChartsPanelSize(sizes[0]);
+          }}
+        >
+          <ResizablePanel
+            defaultSize={chartsPanelSize}
+            minSize={20}
+            className="overflow-hidden"
+          >
+            <div className="h-full w-full overflow-x-auto overflow-y-auto p-3">
+              <div className="flex h-full w-full gap-4">
+                {props.selectedMetrics.map((key) => {
+                  const adapter = new CompareViewAdapter(
+                    runAggregatedMetrics,
+                    key,
+                  );
+                  const { chartData, chartLabels } = adapter.toChartData();
+
+                  const scoreData = scoreKeyToData.get(key);
+                  if (!scoreData)
+                    return (
+                      <div key={key} className="h-full min-w-80 max-w-full">
+                        <TimeseriesChart
+                          chartData={chartData}
+                          chartLabels={chartLabels}
+                          title={
+                            RESOURCE_METRICS.find(
+                              (metric) => metric.key === key,
+                            )?.label ?? key
+                          }
+                          type="numeric"
+                          maxFractionDigits={
+                            RESOURCE_METRICS.find(
+                              (metric) => metric.key === key,
+                            )?.maxFractionDigits
+                          }
+                        />
+                      </div>
+                    );
+
+                  return (
+                    <div key={key} className="h-full min-w-80 max-w-full">
+                      <TimeseriesChart
+                        chartData={chartData}
+                        chartLabels={chartLabels}
+                        title={`${getScoreDataTypeIcon(scoreData.dataType)} ${scoreData.name} (${scoreData.source.toLowerCase()})`}
+                        type={
+                          isNumericDataType(scoreData.dataType)
+                            ? "numeric"
+                            : "categorical"
+                        }
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </ResizablePanel>
+          <ResizableHandle withHandle className="bg-border" />
+          <ResizablePanel
+            minSize={40}
+            className="flex h-full flex-1 flex-col overflow-hidden"
+          >
+            <DataTableToolbar
+              columns={columns}
+              columnVisibility={columnVisibility}
+              setColumnVisibility={setColumnVisibility}
+              columnOrder={columnOrder}
+              setColumnOrder={setColumnOrder}
+              rowHeight={rowHeight}
+              setRowHeight={setRowHeight}
+              actionButtons={[
+                Object.keys(selectedRows).filter((runId) =>
+                  runs.data?.runs.map((run) => run.id).includes(runId),
+                ).length > 0 ? (
+                  <DatasetRunTableMultiSelectAction
+                    // Exclude items that are not in the current page
+                    selectedRunIds={Object.keys(selectedRows).filter((runId) =>
+                      runs.data?.runs.map((run) => run.id).includes(runId),
+                    )}
+                    projectId={props.projectId}
+                    datasetId={props.datasetId}
+                    setRowSelection={setSelectedRows}
+                  />
+                ) : null,
+              ]}
             />
-          ) : null,
-        ]}
-      />
-      <DataTable
-        columns={columns}
-        data={
-          runs.isLoading
-            ? { isLoading: true, isError: false }
-            : runs.isError
-              ? {
-                  isLoading: false,
-                  isError: true,
-                  error: runs.error.message,
-                }
-              : {
-                  isLoading: false,
-                  isError: false,
-                  data: (runsWithMetrics.rows ?? []).map((t) =>
-                    convertToTableRow(t),
-                  ),
-                }
-        }
-        pagination={{
-          totalCount: runs.data?.totalRuns ?? null,
-          onChange: setPaginationState,
-          state: paginationState,
-        }}
-        columnVisibility={columnVisibility}
-        onColumnVisibilityChange={setColumnVisibility}
-        columnOrder={columnOrder}
-        onColumnOrderChange={setColumnOrder}
-        rowHeight={rowHeight}
-        rowSelection={selectedRows}
-        setRowSelection={setSelectedRows}
-      />
+            <DataTable
+              columns={columns}
+              data={
+                runs.isLoading
+                  ? { isLoading: true, isError: false }
+                  : runs.isError
+                    ? {
+                        isLoading: false,
+                        isError: true,
+                        error: runs.error.message,
+                      }
+                    : {
+                        isLoading: false,
+                        isError: false,
+                        data: (runsWithMetrics.rows ?? []).map((t) =>
+                          convertToTableRow(t),
+                        ),
+                      }
+              }
+              pagination={{
+                totalCount: runs.data?.totalRuns ?? null,
+                onChange: setPaginationState,
+                state: paginationState,
+              }}
+              columnVisibility={columnVisibility}
+              onColumnVisibilityChange={setColumnVisibility}
+              columnOrder={columnOrder}
+              onColumnOrderChange={setColumnOrder}
+              rowHeight={rowHeight}
+              rowSelection={selectedRows}
+              setRowSelection={setSelectedRows}
+            />
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      ) : (
+        <>
+          <DataTableToolbar
+            columns={columns}
+            columnVisibility={columnVisibility}
+            setColumnVisibility={setColumnVisibility}
+            columnOrder={columnOrder}
+            setColumnOrder={setColumnOrder}
+            rowHeight={rowHeight}
+            setRowHeight={setRowHeight}
+            actionButtons={[
+              Object.keys(selectedRows).filter((runId) =>
+                runs.data?.runs.map((run) => run.id).includes(runId),
+              ).length > 0 ? (
+                <DatasetRunTableMultiSelectAction
+                  // Exclude items that are not in the current page
+                  selectedRunIds={Object.keys(selectedRows).filter((runId) =>
+                    runs.data?.runs.map((run) => run.id).includes(runId),
+                  )}
+                  projectId={props.projectId}
+                  datasetId={props.datasetId}
+                  setRowSelection={setSelectedRows}
+                />
+              ) : null,
+            ]}
+          />
+          <DataTable
+            columns={columns}
+            data={
+              runs.isLoading
+                ? { isLoading: true, isError: false }
+                : runs.isError
+                  ? {
+                      isLoading: false,
+                      isError: true,
+                      error: runs.error.message,
+                    }
+                  : {
+                      isLoading: false,
+                      isError: false,
+                      data: (runsWithMetrics.rows ?? []).map((t) =>
+                        convertToTableRow(t),
+                      ),
+                    }
+            }
+            pagination={{
+              totalCount: runs.data?.totalRuns ?? null,
+              onChange: setPaginationState,
+              state: paginationState,
+            }}
+            columnVisibility={columnVisibility}
+            onColumnVisibilityChange={setColumnVisibility}
+            columnOrder={columnOrder}
+            onColumnOrderChange={setColumnOrder}
+            rowHeight={rowHeight}
+            rowSelection={selectedRows}
+            setRowSelection={setSelectedRows}
+          />
+        </>
+      )}
     </>
   );
 }

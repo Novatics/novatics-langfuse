@@ -1,93 +1,71 @@
 import { api } from "@/src/utils/api";
-
-import {
-  type ScoreSource,
-  type FilterState,
-  type ScoreDataType,
-} from "@langfuse/shared";
+import { type FilterState } from "@langfuse/shared";
 import { createTracesTimeFilter } from "@/src/features/dashboard/lib/dashboard-utils";
 import {
   type DashboardDateRangeAggregationOption,
   dashboardDateRangeAggregationSettings,
 } from "@/src/utils/date-range-utils";
 import React, { useMemo } from "react";
-import { BarChart } from "@tremor/react";
-import { Card } from "@/src/components/ui/card";
-import { getColorsForCategories } from "@/src/features/dashboard/utils/getColorsForCategories";
+import { DashboardCategoricalScoreAdapter } from "@/src/features/scores/adapters";
+import { type ScoreData } from "@/src/features/scores/types";
+import { CategoricalChart } from "@/src/features/scores/components/ScoreChart";
 import {
-  isEmptyBarChart,
-  transformCategoricalScoresToChartData,
-} from "@/src/features/dashboard/lib/score-analytics-utils";
-import { NoDataOrLoading } from "@/src/components/NoDataOrLoading";
-import { useClickhouse } from "@/src/components/layouts/ClickhouseAdminToggle";
+  type QueryType,
+  mapLegacyUiTableFilterToView,
+} from "@/src/features/query";
+import { type DatabaseRow } from "@/src/server/api/services/sqlInterface";
 
 export function CategoricalScoreChart(props: {
   projectId: string;
-  name: string;
-  source: ScoreSource;
-  dataType: ScoreDataType;
+  scoreData: ScoreData;
   globalFilterState: FilterState;
+  fromTimestamp: Date;
+  toTimestamp: Date;
   agg?: DashboardDateRangeAggregationOption;
 }) {
-  const scores = api.dashboard.chart.useQuery(
+  const scoresQuery: QueryType = {
+    view: "scores-categorical",
+    dimensions: [{ field: "name" }, { field: "stringValue" }],
+    metrics: [{ measure: "count", aggregation: "count" }],
+    filters: [
+      ...mapLegacyUiTableFilterToView(
+        "scores-categorical",
+        createTracesTimeFilter(props.globalFilterState, "scoreTimestamp"),
+      ),
+      {
+        column: "name",
+        operator: "=",
+        value: props.scoreData.name,
+        type: "string",
+      },
+      {
+        column: "source",
+        operator: "=",
+        value: props.scoreData.source,
+        type: "string",
+      },
+      {
+        column: "dataType",
+        operator: "=",
+        value: props.scoreData.dataType,
+        type: "string",
+      },
+    ],
+    timeDimension: props.agg
+      ? {
+          granularity:
+            dashboardDateRangeAggregationSettings[props.agg].date_trunc,
+        }
+      : null,
+    fromTimestamp: props.fromTimestamp.toISOString(),
+    toTimestamp: props.toTimestamp.toISOString(),
+    orderBy: null,
+  };
+
+  const scores = api.dashboard.executeQuery.useQuery(
     {
       projectId: props.projectId,
-      from: "traces_scores",
-      select: [
-        { column: "scoreName" },
-        { column: "scoreDataType" },
-        { column: "scoreSource" },
-        { column: "stringValue" },
-        { column: "stringValue", agg: "COUNT" },
-      ],
-      filter: [
-        ...createTracesTimeFilter(props.globalFilterState, "scoreTimestamp"),
-        {
-          type: "string",
-          column: "scoreName",
-          value: props.name,
-          operator: "=",
-        },
-        {
-          type: "string",
-          column: "scoreSource",
-          value: props.source,
-          operator: "=",
-        },
-        {
-          type: "string",
-          column: "scoreDataType",
-          value: props.dataType,
-          operator: "=",
-        },
-      ],
-      groupBy: [
-        { type: "string", column: "stringValue" },
-        {
-          type: "string",
-          column: "scoreName",
-        },
-        {
-          type: "string",
-          column: "scoreSource",
-        },
-        {
-          type: "string",
-          column: "scoreDataType",
-        },
-        ...(props.agg
-          ? [
-              {
-                type: "datetime",
-                column: "scoreTimestamp",
-                temporalUnit:
-                  dashboardDateRangeAggregationSettings[props.agg].date_trunc,
-              } as const,
-            ]
-          : []),
-      ],
-      queryClickhouse: useClickhouse(),
-      queryName: "categorical-score-chart",
+      query: scoresQuery,
     },
     {
       trpc: {
@@ -99,40 +77,27 @@ export function CategoricalScoreChart(props: {
   );
 
   const { chartData, chartLabels } = useMemo(() => {
-    return scores.data
-      ? transformCategoricalScoresToChartData(
-          scores.data,
-          "scoreTimestamp",
-          props.agg,
-        )
-      : { chartData: [], chartLabels: [] };
+    if (!scores.data) return { chartData: [], chartLabels: [] };
+
+    const adapter = new DashboardCategoricalScoreAdapter(
+      scores.data.map((row) => ({
+        ...row,
+        scoreValue: row.stringValue,
+        count: row.count_count,
+      })) as DatabaseRow[],
+      "time_dimension",
+      props.agg,
+    );
+    return adapter.toChartData();
   }, [scores.data, props.agg]);
 
-  const barCategoryGap = (chartLength: number): string => {
-    if (chartLength > 7) return "10%";
-    if (chartLength > 5) return "20%";
-    if (chartLength > 3) return "30%";
-    else return "40%";
-  };
-  const colors = getColorsForCategories(chartLabels);
-
-  return isEmptyBarChart({ data: chartData }) ? (
-    <NoDataOrLoading isLoading={scores.isLoading} />
-  ) : (
-    <Card className="min-h-[9rem] w-full flex-1 rounded-tremor-default border">
-      <BarChart
-        className="mt-4"
-        data={chartData}
-        index="binLabel"
-        categories={chartLabels}
-        colors={colors}
-        valueFormatter={(number: number) =>
-          Intl.NumberFormat("en-US").format(number).toString()
-        }
-        yAxisWidth={48}
-        barCategoryGap={barCategoryGap(chartData.length)}
-        stack={!!props.agg}
-      />
-    </Card>
+  return (
+    <CategoricalChart
+      chartData={chartData}
+      chartLabels={chartLabels}
+      isLoading={scores.isLoading}
+      className="min-h-[9rem] flex-1"
+      stack={!!props.agg}
+    />
   );
 }

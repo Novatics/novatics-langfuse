@@ -6,6 +6,7 @@ import {
 } from "@/src/components/ui/tooltip";
 import { useState } from "react";
 import Decimal from "decimal.js";
+import { getMaxDecimals } from "@/src/features/models/utils";
 
 interface Details {
   [key: string]: number | undefined;
@@ -36,15 +37,6 @@ export const BreakdownTooltip = ({
       }, {})
     : details;
 
-  // For costs, calculate the maximum number of decimal places needed
-  const getMaxDecimals = (value: number | undefined): number => {
-    if (!value) return 0;
-    const parts = value.toString().split(".");
-
-    // If no decimal point, return 0, else return length of decimal part
-    return parts.length === 1 ? 0 : parts[1].length;
-  };
-
   const formatValueWithPadding = (value: number, maxDecimals: number) => {
     return !value
       ? "0"
@@ -54,14 +46,16 @@ export const BreakdownTooltip = ({
   };
 
   const maxDecimals = isCost
-    ? Math.max(...Object.values(aggregatedDetails).map(getMaxDecimals))
+    ? Math.max(
+        ...Object.values(aggregatedDetails).map((v) => getMaxDecimals(v)),
+      )
     : 0;
 
   return (
     <TooltipProvider>
       <Tooltip open={isOpen} onOpenChange={setIsOpen}>
         <TooltipTrigger
-          className="cursor-pointer"
+          className="flex cursor-pointer"
           onClick={() => setIsOpen(!isOpen)}
         >
           {children}

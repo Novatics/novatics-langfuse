@@ -1,30 +1,36 @@
 import { type TimeSeriesChartDataPoint } from "@/src/features/dashboard/components/BaseTimeSeriesChart";
 import { type FilterState } from "@langfuse/shared";
-import { type DatabaseRow } from "@/src/server/api/services/queryBuilder";
+import { type DatabaseRow } from "@/src/server/api/services/sqlInterface";
 import { api } from "@/src/utils/api";
+import { mapLegacyUiTableFilterToView } from "@/src/features/query";
 
 export const getAllModels = (
   projectId: string,
   globalFilterState: FilterState,
-  useClickhouse: boolean,
+  fromTimestamp: Date,
+  toTimestamp: Date,
 ) => {
-  const allModels = api.dashboard.chart.useQuery(
+  const allModels = api.dashboard.executeQuery.useQuery(
     {
       projectId,
-      from: "traces_observations",
-      select: [{ column: "model" }],
-      filter: [
-        ...globalFilterState,
-        {
-          type: "string",
-          column: "type",
-          operator: "=",
-          value: "GENERATION",
-        },
-      ],
-      groupBy: [{ type: "string", column: "model" }],
-      queryClickhouse: useClickhouse,
-      queryName: "distinct-models",
+      query: {
+        view: "observations",
+        dimensions: [{ field: "providedModelName" }],
+        metrics: [],
+        filters: [
+          ...mapLegacyUiTableFilterToView("observations", globalFilterState),
+          {
+            column: "type",
+            operator: "=",
+            value: "GENERATION",
+            type: "string",
+          },
+        ],
+        timeDimension: null,
+        fromTimestamp: fromTimestamp.toISOString(),
+        toTimestamp: toTimestamp.toISOString(),
+        orderBy: null,
+      },
     },
     {
       trpc: {
@@ -38,10 +44,15 @@ export const getAllModels = (
   return allModels.data ? extractAllModels(allModels.data) : [];
 };
 
-const extractAllModels = (data: DatabaseRow[]): string[] => {
+const extractAllModels = (
+  data: Record<string, unknown>[],
+): { model: string; count: number }[] => {
   return data
-    .filter((item) => item.model !== null)
-    .map((item) => item.model as string);
+    .filter((item) => item.providedModelName !== null)
+    .map((item) => ({
+      model: item.providedModelName as string,
+      count: item.count as number,
+    }));
 };
 
 type ChartData = {
@@ -138,7 +149,6 @@ export function fillMissingValuesAndTransform(
       values: chartDataArray,
     });
   });
-
   return result;
 }
 

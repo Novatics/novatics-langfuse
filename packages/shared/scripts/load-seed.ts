@@ -1,11 +1,6 @@
 import { randomUUID } from "crypto";
 import { prisma } from "../src/db";
-import {
-  clickhouseClient,
-  getDisplaySecretKey,
-  hashSecretKey,
-  logger,
-} from "../src/server";
+import { getDisplaySecretKey, hashSecretKey, logger } from "../src/server";
 import { prepareClickhouse } from "./prepareClickhouse";
 import { redis } from "../src/server";
 
@@ -32,6 +27,9 @@ const prepareProjectsAndApiKeys = async (
       create: {
         id: orgId,
         name: `Organization for ${projectId}`,
+        cloudConfig: {
+          plan: "Team",
+        },
       },
     });
 
@@ -60,6 +58,7 @@ const prepareProjectsAndApiKeys = async (
           publicKey: `pk-${Math.random().toString(36).substr(2, 9)}`,
           hashedSecretKey: sk,
           displaySecretKey: getDisplaySecretKey(sk),
+          scope: "PROJECT",
           project: {
             connect: {
               id: projectId,
@@ -124,7 +123,6 @@ async function main() {
   } catch (error) {
     logger.error("Error during Clickhouse preparation:", error);
   } finally {
-    await clickhouseClient().close();
     await prisma.$disconnect();
     redis?.disconnect();
     logger.info("Disconnected from Clickhouse.");

@@ -95,7 +95,8 @@ const AnnotateIOView = ({
     return configs.map((c) => c.id);
   }, [configs]);
 
-  if (trace.isLoading || !trace.data) return <div>Loading...</div>;
+  if (trace.isLoading || !trace.data)
+    return <div className="p-3">Loading...</div>;
 
   let isValidObservationId = false;
 
@@ -115,45 +116,43 @@ const AnnotateIOView = ({
       }}
     >
       <ResizablePanel
-        className="col-span-1 h-full !overflow-y-auto"
+        className="col-span-1 h-full !overflow-y-auto rounded-md border"
         minSize={30}
         defaultSize={panelSize}
       >
         {view === "hideTree" ? (
-          item.objectType === AnnotationQueueObjectType.TRACE ? (
-            <TracePreview
-              key={trace.data.id}
-              trace={trace.data}
-              scores={trace.data.scores}
-              observations={trace.data.observations}
-              viewType="focused"
-              className="h-full"
-            />
-          ) : (
-            <ObservationPreview
-              observations={trace.data.observations}
-              scores={trace.data.scores}
-              projectId={item.projectId}
-              currentObservationId={item.objectId}
-              traceId={traceId}
-              viewType="focused"
-              className="h-full"
-            />
-          )
-        ) : (
-          <Card className="col-span-2 flex h-full flex-col overflow-hidden p-4">
-            <div className="overflow-x-auto md:overflow-hidden">
-              <Trace
+          <div className="max-h-full min-h-0 overflow-y-auto pl-4">
+            {item.objectType === AnnotationQueueObjectType.TRACE ? (
+              <TracePreview
                 key={trace.data.id}
                 trace={trace.data}
                 scores={trace.data.scores}
-                projectId={trace.data.projectId}
                 observations={trace.data.observations}
                 viewType="focused"
-                isValidObservationId={isValidObservationId}
               />
-            </div>
-          </Card>
+            ) : (
+              <ObservationPreview
+                observations={trace.data.observations}
+                scores={trace.data.scores}
+                projectId={item.projectId}
+                currentObservationId={item.objectId}
+                traceId={traceId}
+                viewType="focused"
+              />
+            )}
+          </div>
+        ) : (
+          <div className="max-h-full min-h-0 overflow-y-auto">
+            <Trace
+              key={trace.data.id}
+              trace={trace.data}
+              scores={trace.data.scores}
+              projectId={trace.data.projectId}
+              observations={trace.data.observations}
+              viewType="focused"
+              isValidObservationId={isValidObservationId}
+            />
+          </div>
         )}
       </ResizablePanel>
       <ResizableHandle withHandle className="ml-4 bg-transparent" />
@@ -166,18 +165,25 @@ const AnnotateIOView = ({
             <div className="w-full overflow-auto">
               <AnnotateDrawerContent
                 key={"annotation-drawer-content" + item.objectId}
-                traceId={traceId}
+                scoreTarget={{
+                  type: "trace",
+                  traceId: traceId,
+                  observationId: item.parentTraceId ? item.objectId : undefined,
+                }}
                 scores={trace.data?.scores ?? []}
-                observationId={item.parentTraceId ? item.objectId : undefined}
                 configs={configs}
                 emptySelectedConfigIds={emptySelectedConfigIds}
                 setEmptySelectedConfigIds={() => {}}
                 projectId={item.projectId}
-                type={item.objectType.toLowerCase() as "trace" | "observation"}
+                analyticsData={{
+                  type: "trace",
+                  source: "AnnotationQueue",
+                }}
                 isSelectHidden
                 queueId={item.queueId}
                 showSaving={showSaving}
                 setShowSaving={setShowSaving}
+                environment={trace.data?.environment}
                 actionButtons={
                   isLockedByOtherUser && isPresent(item.lockedByUser?.name) ? (
                     <div className="flex items-center justify-center rounded-sm border border-dark-red bg-light-red p-1">
@@ -188,6 +194,7 @@ const AnnotateIOView = ({
                     </div>
                   ) : undefined
                 }
+                isDrawerOpen={true}
               />
             </div>
             <div className="relative max-h-64 overflow-auto">

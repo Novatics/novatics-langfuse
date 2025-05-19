@@ -1,4 +1,7 @@
-import { RateLimitService } from "@/src/features/public-api/server/RateLimitService";
+import {
+  createHttpHeaderFromRateLimit,
+  RateLimitService,
+} from "@/src/features/public-api/server/RateLimitService";
 import { Redis } from "ioredis";
 
 describe("RateLimitService", () => {
@@ -8,6 +11,7 @@ describe("RateLimitService", () => {
   beforeAll(() => {
     redis = new Redis("redis://:myredissecret@127.0.0.1:6379", {
       maxRetriesPerRequest: null,
+      enableAutoPipelining: false, // Align with our settings overwrite for rate limit service
     });
   });
 
@@ -30,25 +34,52 @@ describe("RateLimitService", () => {
     }
   });
 
+  it("should create correct ratelimit headers", () => {
+    const rateLimitRes = {
+      points: 1000,
+      remainingPoints: 999,
+      msBeforeNext: 1000,
+      resource: "public-api" as const,
+      scope: {
+        orgId: orgId,
+        plan: "cloud:hobby" as const,
+        projectId: "test-project-id",
+        accessLevel: "project" as const,
+        rateLimitOverrides: [],
+      },
+      consumedPoints: 1,
+      isFirstInDuration: true,
+    };
+
+    const headers = createHttpHeaderFromRateLimit(rateLimitRes);
+
+    expect(headers).toEqual({
+      "Retry-After": 1,
+      "X-RateLimit-Limit": 1000,
+      "X-RateLimit-Remaining": 999,
+      "X-RateLimit-Reset": expect.any(String),
+    });
+  });
+
   it("should rate limit", async () => {
     const scope = {
       orgId: orgId,
       plan: "cloud:hobby" as const,
       projectId: "test-project-id",
-      accessLevel: "all" as const,
+      accessLevel: "project" as const,
       rateLimitOverrides: [],
     };
 
     expect(redis).toBeDefined();
 
-    const rateLimitService = new RateLimitService(redis!);
+    const rateLimitService = RateLimitService.getInstance(redis);
     const result = await rateLimitService.rateLimitRequest(scope, "public-api");
 
     expect(result?.res).toEqual({
       scope: scope,
       resource: "public-api",
-      points: 1000,
-      remainingPoints: 999,
+      points: 30,
+      remainingPoints: 29,
       msBeforeNext: expect.any(Number),
       consumedPoints: 1,
       isFirstInDuration: true,
@@ -68,11 +99,11 @@ describe("RateLimitService", () => {
       orgId: orgId,
       plan: "cloud:hobby" as const,
       projectId: "test-project-id",
-      accessLevel: "all" as const,
+      accessLevel: "project" as const,
       rateLimitOverrides: [],
     };
 
-    const rateLimitService = new RateLimitService(redis!);
+    const rateLimitService = RateLimitService.getInstance(redis);
     await rateLimitService.rateLimitRequest(scope, "public-api");
 
     const result = await rateLimitService.rateLimitRequest(scope, "public-api");
@@ -80,8 +111,8 @@ describe("RateLimitService", () => {
     expect(result?.res).toEqual({
       scope: scope,
       resource: "public-api",
-      points: 1000,
-      remainingPoints: 998,
+      points: 30,
+      remainingPoints: 28,
       msBeforeNext: expect.any(Number),
       consumedPoints: 2,
       isFirstInDuration: false,
@@ -94,13 +125,13 @@ describe("RateLimitService", () => {
       orgId: orgId,
       plan: "cloud:hobby" as const,
       projectId: "test-project-id",
-      accessLevel: "all" as const,
+      accessLevel: "project" as const,
       rateLimitOverrides: [
         { resource: "public-api" as const, points: 100, durationInSec: 2 },
       ],
     };
 
-    const rateLimitService = new RateLimitService(redis!);
+    const rateLimitService = RateLimitService.getInstance(redis);
     await rateLimitService.rateLimitRequest(scope, "public-api");
 
     const firstResult = await rateLimitService.rateLimitRequest(
@@ -144,13 +175,13 @@ describe("RateLimitService", () => {
       orgId: orgId,
       plan: "cloud:hobby" as const,
       projectId: "test-project-id",
-      accessLevel: "all" as const,
+      accessLevel: "project" as const,
       rateLimitOverrides: [
         { resource: "public-api" as const, points: 5, durationInSec: 60 },
       ],
     };
 
-    const rateLimitService = new RateLimitService(redis!);
+    const rateLimitService = RateLimitService.getInstance(redis);
 
     for (let i = 0; i < 5; i++) {
       await rateLimitService.rateLimitRequest(scope, "public-api");
@@ -175,13 +206,13 @@ describe("RateLimitService", () => {
       orgId: orgId,
       plan: "cloud:hobby" as const,
       projectId: "test-project-id",
-      accessLevel: "all" as const,
+      accessLevel: "project" as const,
       rateLimitOverrides: [
         { resource: "public-api" as const, points: 5, durationInSec: 10 },
       ],
     };
 
-    const rateLimitService = new RateLimitService(redis!);
+    const rateLimitService = RateLimitService.getInstance(redis);
 
     const result = await rateLimitService.rateLimitRequest(scope, "public-api");
 
@@ -201,13 +232,13 @@ describe("RateLimitService", () => {
       orgId: orgId,
       plan: "cloud:hobby" as const,
       projectId: "test-project-id",
-      accessLevel: "all" as const,
+      accessLevel: "project" as const,
       rateLimitOverrides: [
         { resource: "public-api" as const, points: 5, durationInSec: 10 },
       ],
     };
 
-    const rateLimitService = new RateLimitService(redis!);
+    const rateLimitService = RateLimitService.getInstance(redis);
 
     const result = await rateLimitService.rateLimitRequest(scope, "prompts");
 
@@ -220,48 +251,49 @@ describe("RateLimitService", () => {
       orgId: orgId,
       plan: "cloud:hobby" as const,
       projectId: "test-project-id",
-      accessLevel: "all" as const,
+      accessLevel: "project" as const,
       rateLimitOverrides: [
         { resource: "ingestion" as const, points: null, durationInSec: null },
       ],
     };
 
-    const rateLimitService = new RateLimitService(redis!);
+    const rateLimitService = RateLimitService.getInstance(redis);
 
     const result = await rateLimitService.rateLimitRequest(scope, "ingestion");
 
     expect(result?.res).toBeUndefined();
   });
 
-  it("should not apply rate limits when redis is not defined", async () => {
-    const scope = {
-      orgId: orgId,
-      plan: "cloud:hobby" as const,
-      projectId: "test-project-id",
-      accessLevel: "all" as const,
-      rateLimitOverrides: [
-        { resource: "public-api" as const, points: 5, durationInSec: 10 },
-      ],
-    };
-
-    const rateLimitService = new RateLimitService(null);
-
-    const result = await rateLimitService.rateLimitRequest(scope, "public-api");
-
-    expect(result?.res).toBeUndefined();
-    expect(result?.isRateLimited()).toBe(false);
-  });
+  // Not applicable now that the RateLimitService instantiates its own Redis
+  // it("should not apply rate limits when redis is not defined", async () => {
+  //   const scope = {
+  //     orgId: orgId,
+  //     plan: "cloud:hobby" as const,
+  //     projectId: "test-project-id",
+  //     accessLevel: "project" as const,
+  //     rateLimitOverrides: [
+  //       { resource: "public-api" as const, points: 5, durationInSec: 10 },
+  //     ],
+  //   };
+  //
+  //   const rateLimitService = new RateLimitService(null);
+  //
+  //   const result = await rateLimitService.rateLimitRequest(scope, "public-api");
+  //
+  //   expect(result?.res).toBeUndefined();
+  //   expect(result?.isRateLimited()).toBe(false);
+  // });
 
   it("should not apply rate limits for OSS plan", async () => {
     const scope = {
       orgId: orgId,
       plan: "oss" as const,
       projectId: "test-project-id",
-      accessLevel: "all" as const,
+      accessLevel: "project" as const,
       rateLimitOverrides: [],
     };
 
-    const rateLimitService = new RateLimitService(redis!);
+    const rateLimitService = RateLimitService.getInstance(redis);
 
     const result = await rateLimitService.rateLimitRequest(scope, "public-api");
 

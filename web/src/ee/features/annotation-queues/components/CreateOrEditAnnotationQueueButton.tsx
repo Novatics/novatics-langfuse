@@ -1,5 +1,5 @@
-import { Button } from "@/src/components/ui/button";
-import React, { useEffect, useState } from "react";
+import { Button, type ButtonProps } from "@/src/components/ui/button";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -31,7 +31,6 @@ import {
 import { api } from "@/src/utils/api";
 import { getScoreDataTypeIcon } from "@/src/features/scores/components/ScoreDetailColumnHelpers";
 import { MultiSelectKeyValues } from "@/src/features/scores/components/multi-select-key-values";
-import { CommandItem } from "@/src/components/ui/command";
 import { useRouter } from "next/router";
 import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePostHogClientCapture";
 import {
@@ -39,15 +38,19 @@ import {
   useEntitlementLimit,
 } from "@/src/features/entitlements/hooks";
 import { ActionButton } from "@/src/components/ActionButton";
+import { DropdownMenuItem } from "@/src/components/ui/dropdown-menu";
+import { useUniqueNameValidation } from "@/src/hooks/useUniqueNameValidation";
 
 export const CreateOrEditAnnotationQueueButton = ({
   projectId,
   queueId,
   variant = "secondary",
+  size,
 }: {
   projectId: string;
   queueId?: string;
-  variant?: "secondary" | "ghost";
+  variant?: ButtonProps["variant"];
+  size?: ButtonProps["size"];
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const hasAccess = useHasProjectAccess({
@@ -117,6 +120,24 @@ export const CreateOrEditAnnotationQueueButton = ({
     },
   );
 
+  const allQueueNamesAndIds = api.annotationQueues.allNamesAndIds.useQuery(
+    { projectId },
+    { enabled: hasAccess && !queueId },
+  );
+
+  const allQueueNames = useMemo(() => {
+    return !queueId && allQueueNamesAndIds.data
+      ? allQueueNamesAndIds.data.map((queue) => ({ value: queue.name }))
+      : [];
+  }, [allQueueNamesAndIds.data, queueId]);
+
+  useUniqueNameValidation({
+    currentName: form.watch("name"),
+    allNames: allQueueNames,
+    form,
+    errorMessage: "Queue name already exists.",
+  });
+
   const configs = configsData.data?.configs ?? [];
 
   const onSubmit = (data: CreateQueue) => {
@@ -168,6 +189,7 @@ export const CreateOrEditAnnotationQueueButton = ({
           hasEntitlement={hasEntitlement}
           limitValue={queueCountData.data}
           limit={queueLimit}
+          size={size}
         >
           <span className="ml-1 text-sm font-normal">
             {queueId ? "Edit" : "New queue"}
@@ -257,7 +279,7 @@ export const CreateOrEditAnnotationQueueButton = ({
                           };
                         })}
                         controlButtons={
-                          <CommandItem
+                          <DropdownMenuItem
                             onSelect={() => {
                               capture(
                                 "score_configs:manage_configs_item_click",
@@ -269,7 +291,7 @@ export const CreateOrEditAnnotationQueueButton = ({
                             }}
                           >
                             Manage score configs
-                          </CommandItem>
+                          </DropdownMenuItem>
                         }
                       />
                     </FormControl>
@@ -277,7 +299,11 @@ export const CreateOrEditAnnotationQueueButton = ({
                   </FormItem>
                 )}
               />
-              <Button type="submit" className="text-xs">
+              <Button
+                type="submit"
+                className="text-xs"
+                disabled={!!form.formState.errors.name}
+              >
                 {queueId ? "Save" : "Create"} queue
               </Button>
             </form>

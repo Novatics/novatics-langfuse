@@ -10,6 +10,7 @@ import {
   type FilterState,
   sessionsTableColsWithOptions,
   BatchExportTableName,
+  TableViewPresetTableName,
 } from "@langfuse/shared";
 import { useDetailPageLists } from "@/src/features/navigate-detail-pages/context";
 import { useOrderByState } from "@/src/features/orderBy/hooks/useOrderByState";
@@ -29,11 +30,23 @@ import TagList from "@/src/features/tag/components/TagList";
 import { useRowHeightLocalStorage } from "@/src/components/table/data-table-row-height-switch";
 import { cn } from "@/src/utils/tailwind";
 import useColumnOrder from "@/src/features/column-visibility/hooks/useColumnOrder";
-import { useClickhouse } from "@/src/components/layouts/ClickhouseAdminToggle";
+import { LocalIsoDate } from "@/src/components/LocalIsoDate";
+import {
+  useEnvironmentFilter,
+  convertSelectedEnvironmentsToFilter,
+} from "@/src/hooks/use-environment-filter";
+import { useTableViewManager } from "@/src/components/table/table-view-presets/hooks/useTableViewManager";
+import { Badge } from "@/src/components/ui/badge";
+import { type ScoreAggregate } from "@langfuse/shared";
+import { useIndividualScoreColumns } from "@/src/features/scores/hooks/useIndividualScoreColumns";
+import {
+  getScoreGroupColumnProps,
+  verifyAndPrefixScoreDataAgainstKeys,
+} from "@/src/features/scores/components/ScoreDetailColumnHelpers";
 
 export type SessionTableRow = {
   id: string;
-  createdAt: string;
+  createdAt: Date;
   bookmarked: boolean;
   userIds: string[] | undefined;
   countTraces: number | undefined;
@@ -45,6 +58,8 @@ export type SessionTableRow = {
   outputTokens: number | undefined;
   totalTokens: number | undefined;
   traceTags: string[] | undefined;
+  environment?: string;
+  scores?: ScoreAggregate;
 };
 
 export type SessionTableProps = {
@@ -90,7 +105,34 @@ export default function SessionsTable({
       ]
     : [];
 
-  const filterState = userFilterState.concat(userIdFilter, dateRangeFilter);
+  const environmentFilterOptions =
+    api.projects.environmentFilterOptions.useQuery(
+      { projectId },
+      {
+        trpc: { context: { skipBatch: true } },
+        refetchOnMount: false,
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
+        staleTime: Infinity,
+      },
+    );
+
+  const environmentOptions =
+    environmentFilterOptions.data?.map((value) => value.environment) || [];
+
+  const { selectedEnvironments, setSelectedEnvironments } =
+    useEnvironmentFilter(environmentOptions, projectId);
+
+  const environmentFilter = convertSelectedEnvironmentsToFilter(
+    ["environment"],
+    selectedEnvironments,
+  );
+
+  const filterState = userFilterState.concat(
+    userIdFilter,
+    dateRangeFilter,
+    environmentFilter,
+  );
 
   const [paginationState, setPaginationState] = useQueryParams({
     pageIndex: withDefault(NumberParam, 0),
@@ -110,7 +152,6 @@ export default function SessionsTable({
     orderBy: null,
     page: 0,
     limit: 1,
-    queryClickhouse: useClickhouse(),
   };
 
   const payloadGetAll = {
@@ -123,11 +164,18 @@ export default function SessionsTable({
   const sessions = api.sessions.all.useQuery(payloadGetAll);
   const sessionCountQuery = api.sessions.countAll.useQuery(payloadCount);
 
+  const { scoreColumns, scoreKeysAndProps, isColumnLoading } =
+    useIndividualScoreColumns<SessionTableRow>({
+      projectId,
+      scoreColumnKey: "scores",
+      selectedFilterOption: selectedOption,
+      cellsLoading: !sessions.data,
+    });
+
   const sessionMetrics = api.sessions.metrics.useQuery(
     {
       projectId,
       sessionIds: sessions.data?.sessions.map((s) => s.id) ?? [],
-      queryClickhouse: useClickhouse(),
     },
     {
       enabled: sessions.data !== undefined,
@@ -149,7 +197,6 @@ export default function SessionsTable({
         dateRangeFilter[0]?.type === "datetime"
           ? dateRangeFilter[0]
           : undefined,
-      queryClickhouse: useClickhouse(),
     },
     {
       trpc: {
@@ -199,6 +246,7 @@ export default function SessionsTable({
       },
       enableSorting: false,
     },
+
     {
       accessorKey: "id",
       id: "id",
@@ -223,6 +271,10 @@ export default function SessionsTable({
       size: 150,
       enableHiding: true,
       enableSorting: true,
+      cell: ({ row }) => {
+        const value: SessionTableRow["createdAt"] = row.getValue("createdAt");
+        return value ? <LocalIsoDate date={value} /> : undefined;
+      },
     },
     {
       accessorKey: "sessionDuration",
@@ -241,6 +293,29 @@ export default function SessionsTable({
           : undefined;
       },
       enableSorting: true,
+    },
+    {
+      accessorKey: "environment",
+      header: "Environment",
+      id: "environment",
+      size: 150,
+      enableHiding: true,
+      cell: ({ row }) => {
+        const value: SessionTableRow["environment"] =
+          row.getValue("environment");
+        return value ? (
+          <Badge
+            variant="secondary"
+            className="max-w-fit truncate rounded-sm px-1 font-normal"
+          >
+            {value}
+          </Badge>
+        ) : null;
+      },
+    },
+    {
+      ...getScoreGroupColumnProps(isColumnLoading || !sessions.data),
+      columns: scoreColumns,
     },
     {
       accessorKey: "userIds",
@@ -415,9 +490,9 @@ export default function SessionsTable({
         }
         return (
           <TokenUsageBadge
-            promptTokens={Number(promptTokens)}
-            completionTokens={Number(completionTokens)}
-            totalTokens={Number(totalTokens)}
+            inputUsage={Number(promptTokens ?? 0)}
+            outputUsage={Number(completionTokens ?? 0)}
+            totalUsage={Number(totalTokens ?? 0)}
             inline
           />
         );
@@ -465,6 +540,21 @@ export default function SessionsTable({
     columns,
   );
 
+  const { isLoading: isViewLoading, ...viewControllers } = useTableViewManager({
+    tableName: TableViewPresetTableName.Sessions,
+    projectId,
+    stateUpdaters: {
+      setOrderBy: setOrderByState,
+      setFilters: setUserFilterState,
+      setColumnOrder: setColumnOrder,
+      setColumnVisibility: setColumnVisibility,
+    },
+    validationContext: {
+      columns,
+      filterColumnDefinition: transformFilterOptions(),
+    },
+  });
+
   return (
     <>
       <DataTableToolbar
@@ -476,6 +566,11 @@ export default function SessionsTable({
         setColumnVisibility={setColumnVisibility}
         columnOrder={columnOrder}
         setColumnOrder={setColumnOrder}
+        viewConfig={{
+          tableName: TableViewPresetTableName.Sessions,
+          projectId,
+          controllers: viewControllers,
+        }}
         actionButtons={[
           <BatchExportTableButton
             {...{ projectId, filterState, orderByState }}
@@ -488,11 +583,16 @@ export default function SessionsTable({
         columnsWithCustomSelect={["userIds"]}
         rowHeight={rowHeight}
         setRowHeight={setRowHeight}
+        environmentFilter={{
+          values: selectedEnvironments,
+          onValueChange: setSelectedEnvironments,
+          options: environmentOptions.map((env) => ({ value: env })),
+        }}
       />
       <DataTable
         columns={columns}
         data={
-          sessions.isLoading
+          sessions.isLoading || isViewLoading
             ? { isLoading: true, isError: false }
             : sessions.isError
               ? {
@@ -503,11 +603,11 @@ export default function SessionsTable({
               : {
                   isLoading: false,
                   isError: false,
-                  data: sessionRowData.rows?.map<SessionTableRow>(
-                    (session) => ({
+                  data: sessionRowData.rows?.map<SessionTableRow>((session) => {
+                    return {
                       id: session.id,
+                      createdAt: session.createdAt,
                       bookmarked: session.bookmarked,
-                      createdAt: session.createdAt.toLocaleString(),
                       userIds: session.userIds,
                       countTraces: session.countTraces,
                       sessionDuration: session.sessionDuration,
@@ -518,8 +618,15 @@ export default function SessionsTable({
                       outputTokens: session.completionTokens,
                       totalTokens: session.totalTokens,
                       traceTags: session.traceTags,
-                    }),
-                  ),
+                      environment: session.environment,
+                      scores: session.scores
+                        ? verifyAndPrefixScoreDataAgainstKeys(
+                            scoreKeysAndProps,
+                            session.scores,
+                          )
+                        : undefined,
+                    };
+                  }),
                 }
         }
         pagination={{

@@ -1,6 +1,6 @@
 import { prisma } from "@langfuse/shared/src/db";
 import { withMiddlewares } from "@/src/features/public-api/server/withMiddlewares";
-import { createAuthedAPIRoute } from "@/src/features/public-api/server/createAuthedAPIRoute";
+import { createAuthedProjectAPIRoute } from "@/src/features/public-api/server/createAuthedProjectAPIRoute";
 import {
   DeleteModelV1Query,
   DeleteModelV1Response,
@@ -9,9 +9,10 @@ import {
   prismaToApiModelDefinition,
 } from "@/src/features/public-api/types/models";
 import { LangfuseNotFoundError } from "@langfuse/shared";
+import { auditLog } from "@/src/features/audit-logs/auditLog";
 
 export default withMiddlewares({
-  GET: createAuthedAPIRoute({
+  GET: createAuthedProjectAPIRoute({
     name: "Get model definitions",
     querySchema: GetModelV1Query,
     responseSchema: GetModelV1Response,
@@ -41,7 +42,7 @@ export default withMiddlewares({
       return prismaToApiModelDefinition(model);
     },
   }),
-  DELETE: createAuthedAPIRoute({
+  DELETE: createAuthedProjectAPIRoute({
     name: "Delete model",
     querySchema: DeleteModelV1Query,
     responseSchema: DeleteModelV1Response,
@@ -63,6 +64,16 @@ export default withMiddlewares({
           projectId: auth.scope.projectId,
         },
       });
+      await auditLog({
+        action: "delete",
+        resourceType: "model",
+        resourceId: query.modelId,
+        projectId: auth.scope.projectId,
+        orgId: auth.scope.orgId,
+        apiKeyId: auth.scope.apiKeyId,
+        before: model,
+      });
+
       return {
         message: "Model successfully deleted" as const,
       };

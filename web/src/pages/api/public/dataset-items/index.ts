@@ -1,6 +1,6 @@
 import { prisma } from "@langfuse/shared/src/db";
 import { withMiddlewares } from "@/src/features/public-api/server/withMiddlewares";
-import { createAuthedAPIRoute } from "@/src/features/public-api/server/createAuthedAPIRoute";
+import { createAuthedProjectAPIRoute } from "@/src/features/public-api/server/createAuthedProjectAPIRoute";
 import { v4 as uuidv4 } from "uuid";
 import {
   GetDatasetItemsV1Query,
@@ -9,13 +9,20 @@ import {
   PostDatasetItemsV1Response,
   transformDbDatasetItemToAPIDatasetItem,
 } from "@/src/features/public-api/types/datasets";
-import { LangfuseNotFoundError } from "@langfuse/shared";
+import {
+  type DatasetItem,
+  LangfuseNotFoundError,
+  Prisma,
+} from "@langfuse/shared";
+import { logger } from "@langfuse/shared/src/server";
+import { auditLog } from "@/src/features/audit-logs/auditLog";
 
 export default withMiddlewares({
-  POST: createAuthedAPIRoute({
+  POST: createAuthedProjectAPIRoute({
     name: "Create Dataset Item",
     bodySchema: PostDatasetItemsV1Body,
     responseSchema: PostDatasetItemsV1Response,
+    rateLimitResource: "datasets",
     fn: async ({ body, auth }) => {
       const {
         datasetName,
@@ -40,33 +47,63 @@ export default withMiddlewares({
 
       const itemId = id ?? uuidv4();
 
-      const item = await prisma.datasetItem.upsert({
-        where: {
-          datasetId: dataset.id,
-          id_projectId: {
-            projectId: auth.scope.projectId,
-            id: itemId,
+      let item: DatasetItem;
+      try {
+        item = await prisma.datasetItem.upsert({
+          where: {
+            datasetId: dataset.id,
+            id_projectId: {
+              projectId: auth.scope.projectId,
+              id: itemId,
+            },
           },
-        },
-        create: {
-          id: itemId,
-          input: input ?? undefined,
-          expectedOutput: expectedOutput ?? undefined,
-          datasetId: dataset.id,
-          metadata: metadata ?? undefined,
-          sourceTraceId: sourceTraceId ?? undefined,
-          sourceObservationId: sourceObservationId ?? undefined,
-          status: status ?? undefined,
-          projectId: auth.scope.projectId,
-        },
-        update: {
-          input: input ?? undefined,
-          expectedOutput: expectedOutput ?? undefined,
-          metadata: metadata ?? undefined,
-          sourceTraceId: sourceTraceId ?? undefined,
-          sourceObservationId: sourceObservationId ?? undefined,
-          status: status ?? undefined,
-        },
+          create: {
+            id: itemId,
+            input: input ?? undefined,
+            expectedOutput: expectedOutput ?? undefined,
+            datasetId: dataset.id,
+            metadata: metadata ?? undefined,
+            sourceTraceId: sourceTraceId ?? undefined,
+            sourceObservationId: sourceObservationId ?? undefined,
+            status: status ?? undefined,
+            projectId: auth.scope.projectId,
+          },
+          update: {
+            input: input ?? undefined,
+            expectedOutput: expectedOutput ?? undefined,
+            metadata: metadata ?? undefined,
+            sourceTraceId: sourceTraceId ?? undefined,
+            sourceObservationId: sourceObservationId ?? undefined,
+            status: status ?? undefined,
+          },
+        });
+      } catch (e) {
+        if (
+          e instanceof Prisma.PrismaClientKnownRequestError &&
+          e.code === "P2025"
+        ) {
+          // this case happens when a dataset item was created for a different dataset.
+          // In the database, the uniqueness constraint is on (id, projectId) only.
+          // When this constraint is violated, the database will upsert based on (id, projectId, datasetId).
+          // If this record does not exist, the database will throw an error.
+          logger.warn(
+            `Failed to upsert dataset item. Dataset item ${itemId} in project ${auth.scope.projectId} already exists for a different dataset than ${dataset.id}`,
+          );
+          throw new LangfuseNotFoundError(
+            `The dataset item with id ${itemId} already exists in a dataset other than ${dataset.name}`,
+          );
+        }
+        throw e;
+      }
+
+      await auditLog({
+        action: "create",
+        resourceType: "datasetItem",
+        resourceId: item.id,
+        projectId: auth.scope.projectId,
+        orgId: auth.scope.orgId,
+        apiKeyId: auth.scope.apiKeyId,
+        after: item,
       });
 
       return transformDbDatasetItemToAPIDatasetItem({
@@ -75,10 +112,11 @@ export default withMiddlewares({
       });
     },
   }),
-  GET: createAuthedAPIRoute({
+  GET: createAuthedProjectAPIRoute({
     name: "Get Dataset Items",
     querySchema: GetDatasetItemsV1Query,
     responseSchema: GetDatasetItemsV1Response,
+    rateLimitResource: "datasets",
     fn: async ({ query, auth }) => {
       const { datasetName, sourceTraceId, sourceObservationId, page, limit } =
         query;

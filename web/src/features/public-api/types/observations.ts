@@ -1,10 +1,14 @@
 import {
-  type ObservationView,
+  type Observation,
   paginationMetaResponseZod,
   publicApiPaginationZod,
 } from "@langfuse/shared";
 
-import { stringDateTime } from "@langfuse/shared/src/server";
+import {
+  reduceUsageOrCostDetails,
+  stringDateTime,
+} from "@langfuse/shared/src/server";
+import type Decimal from "decimal.js";
 import { z } from "zod";
 
 /**
@@ -21,6 +25,7 @@ export const APIObservation = z
     parentObservationId: z.string().nullable(),
     name: z.string().nullable(),
     type: ObservationType,
+    environment: z.string().default("default"),
     startTime: z.coerce.date(),
     endTime: z.coerce.date().nullable(),
     version: z.string().nullable(),
@@ -85,25 +90,56 @@ export const APIObservation = z
  * @returns API Observation as defined in the public API
  */
 export const transformDbToApiObservation = (
-  observation: ObservationView,
+  observation: Observation & {
+    inputPrice: Decimal | null;
+    outputPrice: Decimal | null;
+    totalPrice: Decimal | null;
+  },
 ): z.infer<typeof APIObservation> => {
-  const { promptTokens, completionTokens, totalTokens, unit, ...rest } =
-    observation;
+  const reducedUsageDetails = reduceUsageOrCostDetails(
+    observation.usageDetails,
+  );
+  const reducedCostDetails = reduceUsageOrCostDetails(observation.costDetails);
+
+  const unit = "TOKENS";
+
+  const promptTokens = reducedUsageDetails.input ?? 0;
+  const completionTokens = reducedUsageDetails.output ?? 0;
+  const totalTokens = reducedUsageDetails.total ?? 0;
+
+  const {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    providedCostDetails,
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    internalModelId,
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    inputCost,
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    outputCost,
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    totalCost,
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    inputUsage,
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    outputUsage,
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    totalUsage,
+    ...rest
+  } = observation;
 
   return {
-    usageDetails: {}, // Important: order matters here, in PG there are no usageDetails but in CH there are and will be written by rest
-    costDetails: {}, // Important: order matters here, in PG there are no costDetails but in CH there are and will be written by rest
     ...rest,
-    unit,
-    promptTokens,
-    completionTokens,
-    totalTokens,
+    calculatedInputCost: reducedCostDetails.input,
+    calculatedOutputCost: reducedCostDetails.output,
+    calculatedTotalCost: reducedCostDetails.total,
+    unit: unit,
     inputPrice: observation.inputPrice?.toNumber() ?? null,
     outputPrice: observation.outputPrice?.toNumber() ?? null,
     totalPrice: observation.totalPrice?.toNumber() ?? null,
-    calculatedInputCost: observation.calculatedInputCost?.toNumber() ?? null,
-    calculatedOutputCost: observation.calculatedOutputCost?.toNumber() ?? null,
-    calculatedTotalCost: observation.calculatedTotalCost?.toNumber() ?? null,
+    promptTokens,
+    completionTokens,
+    totalTokens,
+    modelId: observation.internalModelId ?? null,
     usage: {
       unit,
       input: promptTokens,
@@ -126,6 +162,7 @@ export const GetObservationsV1Query = z.object({
   traceId: z.string().nullish(),
   version: z.string().nullish(),
   parentObservationId: z.string().nullish(),
+  environment: z.union([z.array(z.string()), z.string()]).nullish(),
   fromStartTime: stringDateTime,
   toStartTime: stringDateTime,
 });

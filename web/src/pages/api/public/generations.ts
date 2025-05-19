@@ -5,8 +5,7 @@ import {
   PatchGenerationsV1Response,
 } from "@/src/features/public-api/types/generations";
 import { withMiddlewares } from "@/src/features/public-api/server/withMiddlewares";
-import { createAuthedAPIRoute } from "@/src/features/public-api/server/createAuthedAPIRoute";
-import { tokenCount } from "@/src/features/ingest/usage";
+import { createAuthedProjectAPIRoute } from "@/src/features/public-api/server/createAuthedProjectAPIRoute";
 import {
   eventTypes,
   logger,
@@ -15,7 +14,7 @@ import {
 import { v4 } from "uuid";
 
 export default withMiddlewares({
-  POST: createAuthedAPIRoute({
+  POST: createAuthedProjectAPIRoute({
     name: "Create Generation (Legacy)",
     bodySchema: PostGenerationsV1Body,
     responseSchema: PostGenerationsV1Response,
@@ -36,7 +35,7 @@ export default withMiddlewares({
       if (!event.body.id) {
         event.body.id = v4();
       }
-      const result = await processEventBatch([event], auth, tokenCount);
+      const result = await processEventBatch([event], auth);
       if (result.errors.length > 0) {
         const error = result.errors[0];
         res
@@ -51,7 +50,7 @@ export default withMiddlewares({
       return { id: event.body.id };
     },
   }),
-  PATCH: createAuthedAPIRoute({
+  PATCH: createAuthedProjectAPIRoute({
     name: "Patch Generation (Legacy)",
     bodySchema: PatchGenerationsV1Body,
     responseSchema: PatchGenerationsV1Response,
@@ -70,7 +69,7 @@ export default withMiddlewares({
           output: completion,
         },
       };
-      const result = await processEventBatch([event], auth, tokenCount);
+      const result = await processEventBatch([event], auth);
       if (result.errors.length > 0) {
         const error = result.errors[0];
         res

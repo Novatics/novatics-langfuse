@@ -1,6 +1,6 @@
-import { UiColumnMapping } from "./types";
+import { UiColumnMappings } from "./types";
 
-export const scoresTableUiColumnDefinitions: UiColumnMapping[] = [
+export const scoresTableUiColumnDefinitions: UiColumnMappings = [
   {
     uiTableName: "ID",
     uiTableId: "id",
@@ -14,6 +14,12 @@ export const scoresTableUiColumnDefinitions: UiColumnMapping[] = [
     clickhouseSelect: "timestamp",
   },
   {
+    uiTableName: "Environment",
+    uiTableId: "environment",
+    clickhouseTableName: "scores",
+    clickhouseSelect: "environment",
+  },
+  {
     uiTableName: "Trace ID",
     uiTableId: "traceId",
     clickhouseTableName: "scores",
@@ -24,6 +30,12 @@ export const scoresTableUiColumnDefinitions: UiColumnMapping[] = [
     uiTableId: "observationId",
     clickhouseTableName: "scores",
     clickhouseSelect: "observation_id",
+  },
+  {
+    uiTableName: "Session ID",
+    uiTableId: "sessionId",
+    clickhouseTableName: "scores",
+    clickhouseSelect: "session_id",
   },
   {
     uiTableName: "Name",

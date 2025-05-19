@@ -1,24 +1,32 @@
-import { ObservationType } from "@langfuse/shared";
 import { type NestedObservation } from "@/src/utils/types";
 import { type ObservationReturnType } from "@/src/server/api/routers/traces";
 import Decimal from "decimal.js";
+import {
+  type ObservationType,
+  type ObservationLevelType,
+  ObservationLevel,
+} from "@langfuse/shared";
 
 export type TreeItemType = ObservationType | "TRACE";
 
-export const treeItemColors: Map<TreeItemType, string> = new Map([
-  [ObservationType.SPAN, "bg-muted-blue"],
-  [ObservationType.GENERATION, "bg-muted-orange"],
-  [ObservationType.EVENT, "bg-muted-green"],
-  ["TRACE", "bg-input"],
-]);
-
 export function nestObservations(
   list: ObservationReturnType[],
-): NestedObservation[] {
-  if (list.length === 0) return [];
+  minLevel?: ObservationLevelType,
+): {
+  nestedObservations: NestedObservation[];
+  hiddenObservationsCount: number;
+} {
+  if (list.length === 0)
+    return { nestedObservations: [], hiddenObservationsCount: 0 };
 
-  // Data prep: Remove parentObservationId attribute from observations if the id does not exist in the list of observations
-  const mutableList = list.map((o) => ({ ...o }));
+  // Data prep:
+  // - Filter for observations with minimum level
+  // - Remove parentObservationId attribute from observations if the id does not exist in the list of observations
+  const mutableList = list.filter((o) =>
+    getObservationLevels(minLevel).includes(o.level),
+  );
+  const hiddenObservationsCount = list.length - mutableList.length;
+
   mutableList.forEach((observation) => {
     if (
       observation.parentObservationId &&
@@ -61,7 +69,10 @@ export function nestObservations(
   }
 
   // Step 5: Return the roots.
-  return Array.from(roots.values());
+  return {
+    nestedObservations: Array.from(roots.values()),
+    hiddenObservationsCount,
+  };
 }
 
 export function calculateDisplayTotalCost(p: {
@@ -92,40 +103,91 @@ export function calculateDisplayTotalCost(p: {
     }
   }
 
-  const totalCost = observations.reduce(
+  const totalCost = observations.reduce<Decimal | undefined>(
     (prev: Decimal | undefined, curr: ObservationReturnType) => {
       // if we don't have any calculated costs, we can't do anything
-      if (
-        !curr.calculatedTotalCost &&
-        !curr.calculatedInputCost &&
-        !curr.calculatedOutputCost
-      )
-        return prev;
+      if (!curr.totalCost && !curr.inputCost && !curr.outputCost) return prev;
 
       // if we have either input or output cost, but not total cost, we can use that
-      if (
-        !curr.calculatedTotalCost &&
-        (curr.calculatedInputCost || curr.calculatedOutputCost)
-      ) {
+      if (!curr.totalCost && (curr.inputCost || curr.outputCost)) {
+        const inputCost =
+          curr.inputCost != null ? new Decimal(curr.inputCost) : new Decimal(0);
+
+        const outputCost =
+          curr.outputCost != null
+            ? new Decimal(curr.outputCost)
+            : new Decimal(0);
+
+        const combinedCost = inputCost.plus(outputCost);
+
         return prev
-          ? prev.plus(
-              curr.calculatedInputCost ??
-                new Decimal(0).plus(
-                  curr.calculatedOutputCost ?? new Decimal(0),
-                ),
-            )
-          : curr.calculatedInputCost ?? curr.calculatedOutputCost ?? undefined;
+          ? prev.plus(combinedCost)
+          : combinedCost.isZero()
+            ? undefined
+            : combinedCost;
       }
 
-      if (!curr.calculatedTotalCost) return prev;
+      if (!curr.totalCost) return prev;
 
       // if we have total cost, we can use that
-      return prev
-        ? prev.plus(curr.calculatedTotalCost)
-        : curr.calculatedTotalCost;
+      return prev ? prev.plus(curr.totalCost) : new Decimal(curr.totalCost);
     },
     undefined,
   );
 
   return totalCost;
 }
+
+function getObservationLevels(minLevel: ObservationLevelType | undefined) {
+  const ascendingLevels = [
+    ObservationLevel.DEBUG,
+    ObservationLevel.DEFAULT,
+    ObservationLevel.WARNING,
+    ObservationLevel.ERROR,
+  ];
+
+  if (!minLevel) return ascendingLevels;
+
+  const minLevelIndex = ascendingLevels.indexOf(minLevel);
+
+  return ascendingLevels.slice(minLevelIndex);
+}
+
+export const heatMapTextColor = (p: {
+  min?: Decimal | number;
+  max: Decimal | number;
+  value: Decimal | number;
+}) => {
+  const { min, max, value } = p;
+  const minDecimal = min ? new Decimal(min) : new Decimal(0);
+  const maxDecimal = new Decimal(max);
+  const valueDecimal = new Decimal(value);
+
+  const cutOffs: [number, string][] = [
+    [0.75, "text-dark-red"], // 75%
+    [0.5, "text-dark-yellow"], // 50%
+  ];
+  const standardizedValueOnStartEndScale = valueDecimal
+    .sub(minDecimal)
+    .div(maxDecimal.sub(minDecimal));
+  const ratio = standardizedValueOnStartEndScale.toNumber();
+
+  // pick based on ratio if threshold is exceeded
+  for (const [threshold, color] of cutOffs) {
+    if (ratio >= threshold) {
+      return color;
+    }
+  }
+  return "";
+};
+
+// Helper function to unnest observations for cost calculation
+export const unnestObservation = (nestedObservation: NestedObservation) => {
+  const unnestedObservations = [];
+  const { children, ...observation } = nestedObservation;
+  unnestedObservations.push(observation);
+  children.forEach((child) => {
+    unnestedObservations.push(...unnestObservation(child));
+  });
+  return unnestedObservations;
+};

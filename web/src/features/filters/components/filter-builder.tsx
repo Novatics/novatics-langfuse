@@ -9,7 +9,7 @@ import {
 } from "@/src/components/ui/select";
 import { DatePicker } from "@/src/components/date-picker";
 import { useState, type Dispatch, type SetStateAction } from "react";
-import { Check, ChevronDown, Filter, Plus, X } from "lucide-react";
+import { Check, ChevronDown, Plus, X } from "lucide-react";
 import {
   Popover,
   PopoverContent,
@@ -29,13 +29,13 @@ import { NonEmptyString } from "@langfuse/shared";
 import { cn } from "@/src/utils/tailwind";
 import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePostHogClientCapture";
 import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from "@/src/components/ui/command";
+  InputCommand,
+  InputCommandEmpty,
+  InputCommandGroup,
+  InputCommandInput,
+  InputCommandItem,
+  InputCommandList,
+} from "@/src/components/ui/input-command";
 
 // Has WipFilterState, passes all valid filters to parent onChange
 export function PopoverFilterBuilder({
@@ -105,23 +105,24 @@ export function PopoverFilterBuilder({
       >
         <PopoverTrigger asChild>
           <Button variant="outline">
-            <Filter className="h-4 w-4" />
-            <span className="hidden @6xl:ml-2 @6xl:inline">Filter</span>
+            <span>Filters</span>
             {filterState.length > 0 && filterState.length < 3 ? (
               <InlineFilterState
                 filterState={filterState}
                 className="hidden @6xl:block"
               />
             ) : null}
-            {filterState.length > 0 && (
+            {filterState.length > 0 ? (
               <span
                 className={cn(
-                  "ml-3 rounded-md bg-input px-2 py-1 text-xs @6xl:hidden",
+                  "ml-1.5 rounded-sm bg-input px-1 text-xs shadow-sm @6xl:hidden",
                   filterState.length > 2 && "@6xl:inline",
                 )}
               >
                 {filterState.length}
               </span>
+            ) : (
+              <ChevronDown className="ml-1 h-4 w-4 opacity-50" />
             )}
           </Button>
         </PopoverTrigger>
@@ -193,11 +194,15 @@ export function InlineFilterBuilder({
   filterState,
   onChange,
   disabled,
+  columnsWithCustomSelect,
 }: {
   columns: ColumnDefinition[];
   filterState: FilterState;
-  onChange: Dispatch<SetStateAction<FilterState>>;
+  onChange:
+    | Dispatch<SetStateAction<FilterState>>
+    | ((newState: FilterState) => void);
   disabled?: boolean;
+  columnsWithCustomSelect?: string[];
 }) {
   const [wipFilterState, _setWipFilterState] =
     useState<WipFilterState>(filterState);
@@ -222,10 +227,19 @@ export function InlineFilterBuilder({
         filterState={wipFilterState}
         onChange={setWipFilterState}
         disabled={disabled}
+        columnsWithCustomSelect={columnsWithCustomSelect}
       />
     </div>
   );
 }
+
+const getOperator = (
+  type: NonNullable<WipFilterCondition["type"]>,
+): WipFilterCondition["operator"] => {
+  return filterOperators[type]?.length > 0
+    ? filterOperators[type][0]
+    : undefined;
+};
 
 function FilterBuilderForm({
   columns,
@@ -289,42 +303,53 @@ function FilterBuilderForm({
                         role="combobox"
                         type="button"
                         disabled={disabled}
-                        className="w-full min-w-32 justify-between"
+                        className="flex w-full min-w-32 items-center justify-between gap-2"
                       >
-                        {column ? column.name : "Column"}
-                        <ChevronDown className="h-4 w-4 opacity-50" />
+                        <span className="truncate">
+                          {column ? column.name : "Column"}
+                        </span>
+                        <ChevronDown className="h-4 w-4 flex-shrink-0 opacity-50" />
                       </Button>
                     </PopoverTrigger>
-                    <PopoverContent className="max-w-fit p-0">
-                      <Command>
-                        <CommandInput
+                    <PopoverContent
+                      className="max-w-fit p-0"
+                      onWheel={(e) => {
+                        e.stopPropagation();
+                      }}
+                      onTouchMove={(e) => {
+                        e.stopPropagation();
+                      }}
+                    >
+                      <InputCommand>
+                        <InputCommandInput
                           placeholder="Search for column"
                           onFocus={(e) => (e.target.style.border = "none")}
                         />
-                        <CommandList>
-                          <CommandEmpty>No options found.</CommandEmpty>
-                          <CommandGroup>
+                        <InputCommandList>
+                          <InputCommandEmpty>
+                            No options found.
+                          </InputCommandEmpty>
+                          <InputCommandGroup>
                             {columns.map((option) => (
-                              <CommandItem
+                              <InputCommandItem
                                 key={option.id}
                                 value={option.id}
                                 onSelect={(value) => {
                                   const col = columns.find(
                                     (c) => c.id === value,
                                   );
+                                  const defaultOperator = col?.type
+                                    ? getOperator(col.type)
+                                    : undefined;
+
                                   handleFilterChange(
                                     {
                                       column: col?.name,
                                       type: col?.type,
-                                      operator:
-                                        // does not work as expected on eval-template form when embedded into form via InlineFilterBuilder
-                                        // col?.type !== undefined &&
-                                        // filterOperators[col.type]?.length > 0
-                                        //   ? (filterOperators[col.type][0] as any) // operator matches type
-                                        undefined,
+                                      operator: defaultOperator,
                                       value: undefined,
                                       key: undefined,
-                                    },
+                                    } as WipFilterCondition,
                                     i,
                                   );
                                 }}
@@ -338,11 +363,11 @@ function FilterBuilderForm({
                                   )}
                                 />
                                 {option.name}
-                              </CommandItem>
+                              </InputCommandItem>
                             ))}
-                          </CommandGroup>
-                        </CommandList>
-                      </Command>
+                          </InputCommandGroup>
+                        </InputCommandList>
+                      </InputCommand>
                     </PopoverContent>
                   </Popover>
                   {filter.type &&
@@ -351,7 +376,7 @@ function FilterBuilderForm({
                   (column?.type === "numberObject" ||
                     column?.type === "stringObject") ? (
                     column.keyOptions ? (
-                      // selector of the key of the object to be filtered
+                      // Case 1: object with keyOptions - selector of the key of the object
                       <Select
                         disabled={!filter.column}
                         onValueChange={(value) => {
@@ -373,6 +398,7 @@ function FilterBuilderForm({
                         </SelectContent>
                       </Select>
                     ) : (
+                      // Case 2: object without keyOptions - text input
                       <Input
                         value={filter.key ?? ""}
                         placeholder="key"
@@ -385,12 +411,34 @@ function FilterBuilderForm({
                         }
                       />
                     )
+                  ) : filter.type === "categoryOptions" &&
+                    column?.type === "categoryOptions" ? (
+                    // Case 3: categoryOptions
+                    <Select
+                      onValueChange={(value) => {
+                        handleFilterChange({ ...filter, key: value }, i);
+                      }}
+                      value={filter.key ?? ""}
+                    >
+                      <SelectTrigger className="min-w-[60px]">
+                        <SelectValue placeholder="" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {column?.options.map((option) => (
+                          <SelectItem key={option.label} value={option.label}>
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   ) : null}
                 </td>
                 <td className="p-1">
                   <Select
                     disabled={!filter.column || disabled}
                     onValueChange={(value) => {
+                      // protect against invalid empty operator values
+                      if (value === "") return;
                       handleFilterChange(
                         {
                           ...filter,
@@ -473,6 +521,26 @@ function FilterBuilderForm({
                       className="min-w-[100px]"
                       options={
                         column?.type === filter.type ? column.options : []
+                      }
+                      onValueChange={(value) =>
+                        handleFilterChange({ ...filter, value }, i)
+                      }
+                      values={Array.isArray(filter.value) ? filter.value : []}
+                      disabled={disabled}
+                      isCustomSelectEnabled={
+                        column?.type === filter.type &&
+                        columnsWithCustomSelect.includes(column.id)
+                      }
+                    />
+                  ) : filter.type === "categoryOptions" &&
+                    column?.type === "categoryOptions" ? (
+                    <MultiSelect
+                      title="Value"
+                      className="min-w-[100px]"
+                      options={
+                        column?.options
+                          .find((o) => o.label === filter.key)
+                          ?.values?.map((v) => ({ value: v })) ?? []
                       }
                       onValueChange={(value) =>
                         handleFilterChange({ ...filter, value }, i)

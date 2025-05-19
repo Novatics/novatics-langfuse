@@ -15,9 +15,8 @@ import {
   BaseError,
   UnauthorizedError,
 } from "@langfuse/shared";
-import { instrumentSync, processEventBatch } from "@langfuse/shared/src/server";
+import { processEventBatch } from "@langfuse/shared/src/server";
 import { prisma } from "@langfuse/shared/src/db";
-import { tokenCount } from "@/src/features/ingest/usage";
 import { ApiAuthService } from "@/src/features/public-api/server/apiAuth";
 import { RateLimitService } from "@/src/features/public-api/server/RateLimitService";
 
@@ -79,12 +78,18 @@ export default async function handler(
     if (!authCheck.validKey) {
       throw new UnauthorizedError(authCheck.error);
     }
+    if (!authCheck.scope.projectId) {
+      throw new UnauthorizedError(
+        "Missing projectId in scope. Are you using an organization key?",
+      );
+    }
 
     try {
-      const rateLimitCheck = await new RateLimitService(redis).rateLimitRequest(
-        authCheck.scope,
-        "ingestion",
-      );
+      const rateLimitCheck =
+        await RateLimitService.getInstance().rateLimitRequest(
+          authCheck.scope,
+          "ingestion",
+        );
 
       if (rateLimitCheck?.isRateLimited()) {
         return rateLimitCheck.sendRestResponseIfLimited(res);
@@ -100,10 +105,7 @@ export default async function handler(
       metadata: jsonSchema.nullish(),
     });
 
-    const parsedSchema = instrumentSync(
-      { name: "ingestion-zod-parse-unknown-batch-event" },
-      () => batchType.safeParse(req.body),
-    );
+    const parsedSchema = batchType.safeParse(req.body);
 
     if (!parsedSchema.success) {
       logger.info("Invalid request data", parsedSchema.error);
@@ -115,11 +117,7 @@ export default async function handler(
 
     await telemetry();
 
-    const result = await processEventBatch(
-      parsedSchema.data.batch,
-      authCheck,
-      tokenCount,
-    );
+    const result = await processEventBatch(parsedSchema.data.batch, authCheck);
     return res.status(207).json(result);
   } catch (error: unknown) {
     if (!(error instanceof UnauthorizedError)) {

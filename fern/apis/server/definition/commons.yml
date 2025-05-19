@@ -38,6 +38,9 @@ types:
       public:
         type: optional<boolean>
         docs: Public traces are accessible via url without login
+      environment:
+        type: optional<string>
+        docs: The environment from which this trace originated. Can be any lowercase alphanumeric string with hyphens and underscores that does not start with 'langfuse'.
   TraceWithDetails: # GET /traces
     extends: Trace
     properties:
@@ -72,13 +75,16 @@ types:
         type: list<ObservationsView>
         docs: List of observations
       scores:
-        type: list<Score>
+        type: list<ScoreV1>
         docs: List of scores
   Session:
     properties:
       id: string
       createdAt: datetime
       projectId: string
+      environment:
+        type: optional<string>
+        docs: The environment from which this session originated.
   SessionWithTraces:
     extends: Session
     properties:
@@ -145,6 +151,9 @@ types:
       costDetails:
         type: optional<map<string, double>>
         docs: The cost details of the observation. Key is the name of the cost metric, value is the cost in USD. The total key is the sum of all (non-total) cost metrics or the total value ingested.
+      environment:
+        type: optional<string>
+        docs: The environment from which this observation originated. Can be any lowercase alphanumeric string with hyphens and underscores that does not start with 'langfuse'.
 
   ObservationsView:
     extends: Observation
@@ -231,7 +240,7 @@ types:
     properties:
       value: double
       label: string
-  BaseScore:
+  BaseScoreV1:
     properties:
       id: string
       traceId: string
@@ -243,12 +252,77 @@ types:
       updatedAt: datetime
       authorUserId: optional<string>
       comment: optional<string>
+      metadata: optional<unknown>
       configId:
         type: optional<string>
         docs: Reference a score config on a score. When set, config and score name must be equal and value must comply to optionally defined numerical range
       queueId:
         type: optional<string>
         docs: Reference an annotation queue on a score. Populated if the score was initially created in an annotation queue.
+      environment:
+        type: optional<string>
+        docs: The environment from which this score originated. Can be any lowercase alphanumeric string with hyphens and underscores that does not start with 'langfuse'.
+  NumericScoreV1:
+    extends: BaseScoreV1
+    properties:
+      value:
+        type: double
+        docs: The numeric value of the score
+  BooleanScoreV1:
+    extends: BaseScoreV1
+    properties:
+      value:
+        type: double
+        docs: The numeric value of the score. Equals 1 for "True" and 0 for "False"
+      stringValue:
+        type: string
+        docs: The string representation of the score value. Is inferred from the numeric value and equals "True" or "False"
+  CategoricalScoreV1:
+    extends: BaseScoreV1
+    properties:
+      value:
+        type: optional<double>
+        docs: Only defined if a config is linked. Represents the numeric category mapping of the stringValue
+      stringValue:
+        type: string
+        docs: The string representation of the score value. If no config is linked, can be any string. Otherwise, must map to a config category
+  ScoreV1:
+    discriminant: "dataType"
+    union:
+      NUMERIC:
+        type: NumericScoreV1
+        docs: "Score with NUMERIC data type"
+      CATEGORICAL:
+        type: CategoricalScoreV1
+        docs: "Score with CATEGORICAL data type"
+      BOOLEAN:
+        type: BooleanScoreV1
+        docs: "Score with BOOLEAN data type"
+
+  BaseScore:
+    properties:
+      id: string
+      traceId: optional<string>
+      sessionId: optional<string>
+      observationId: optional<string>
+      datasetRunId: optional<string>
+      name: string
+      source: ScoreSource
+      timestamp: datetime
+      createdAt: datetime
+      updatedAt: datetime
+      authorUserId: optional<string>
+      comment: optional<string>
+      metadata: optional<unknown>
+      configId:
+        type: optional<string>
+        docs: Reference a score config on a score. When set, config and score name must be equal and value must comply to optionally defined numerical range
+      queueId:
+        type: optional<string>
+        docs: Reference an annotation queue on a score. Populated if the score was initially created in an annotation queue.
+      environment:
+        type: optional<string>
+        docs: The environment from which this score originated. Can be any lowercase alphanumeric string with hyphens and underscores that does not start with 'langfuse'.
   NumericScore:
     extends: BaseScore
     properties:
@@ -378,10 +452,10 @@ types:
         type: string
       startDate:
         docs: Apply only to generations which are newer than this ISO date.
-        type: optional<date>
+        type: optional<datetime>
       unit:
         docs: Unit used by this model.
-        type: ModelUsageUnit
+        type: optional<ModelUsageUnit>
       inputPrice:
         docs: Price (USD) per input unit
         type: optional<double>

@@ -1,10 +1,11 @@
 import {
   ScoreBodyWithoutConfig,
+  ScoreDomain,
   ScorePropsAgainstConfig,
   validateDbScoreConfigSafe,
   ValidatedScoreConfig,
 } from "../../../src";
-import { prisma, Score, ScoreDataType } from "../../db";
+import { prisma, ScoreDataType } from "../../db";
 
 import { InvalidRequestError, LangfuseNotFoundError } from "../../errors";
 
@@ -16,7 +17,7 @@ type ValidateAndInflateScoreParams = {
 
 export async function validateAndInflateScore(
   params: ValidateAndInflateScoreParams,
-): Promise<Score> {
+): Promise<ScoreDomain> {
   const { body, projectId, scoreId } = params;
 
   if (body.configId) {
@@ -84,7 +85,7 @@ function mapStringValueToNumericValue(
 
 function inflateScoreBody(
   params: ValidateAndInflateScoreParams & { config?: ValidatedScoreConfig },
-): Score {
+): ScoreDomain {
   const { body, projectId, scoreId, config } = params;
 
   const relevantDataType = config?.dataType ?? body.dataType;

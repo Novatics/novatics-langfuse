@@ -1,11 +1,21 @@
 import { type NextApiRequest, type NextApiResponse } from "next";
 import { z } from "zod";
 import { logger, QueueName, getQueue } from "@langfuse/shared/src/server";
-import { env } from "@/src/env.mjs";
+import { AdminApiAuthService } from "@/src/features/admin-api/server/adminApiAuth";
 
 /* 
 This API route is used by Langfuse Cloud to retry failed bullmq jobs.
 */
+
+const BullStatus = z.enum([
+  "completed",
+  "failed",
+  "active",
+  "delayed",
+  "prioritized",
+  "paused",
+  "wait",
+]);
 
 const ManageBullBody = z.discriminatedUnion("action", [
   z.object({
@@ -15,15 +25,7 @@ const ManageBullBody = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("remove"),
     queueNames: z.array(z.string()),
-    bullStatus: z.enum([
-      "completed",
-      "failed",
-      "active",
-      "delayed",
-      "prioritized",
-      "paused",
-      "wait",
-    ]),
+    bullStatus: BullStatus,
   }),
 ]);
 
@@ -32,35 +34,13 @@ export default async function handler(
   res: NextApiResponse,
 ) {
   try {
-    // allow only POST requests
+    // allow only POST and GET requests
     if (req.method !== "POST" && req.method !== "GET") {
       res.status(405).json({ error: "Method Not Allowed" });
       return;
     }
 
-    if (!env.NEXT_PUBLIC_LANGFUSE_CLOUD_REGION) {
-      res.status(403).json({ error: "Only accessible on Langfuse cloud" });
-      return;
-    }
-
-    // check if ADMIN_API_KEY is set
-    if (!env.ADMIN_API_KEY) {
-      logger.error("ADMIN_API_KEY is not set");
-      res.status(500).json({ error: "ADMIN_API_KEY is not set" });
-      return;
-    }
-
-    // check bearer token
-    const { authorization } = req.headers;
-    if (!authorization) {
-      res
-        .status(401)
-        .json({ error: "Unauthorized: No authorization header provided" });
-      return;
-    }
-    const [scheme, token] = authorization.split(" ");
-    if (scheme !== "Bearer" || !token || token !== env.ADMIN_API_KEY) {
-      res.status(401).json({ error: "Unauthorized: Invalid token" });
+    if (!AdminApiAuthService.handleAdminAuth(req, res)) {
       return;
     }
 
@@ -165,7 +145,7 @@ export default async function handler(
     // return not implemented error
     res.status(404).json({ error: "Action does not exist" });
   } catch (e) {
-    logger.error("failed to remove API keys", e);
+    logger.error("failed to manage bullmq jobs", e);
     res.status(500).json({ error: e });
   }
 }

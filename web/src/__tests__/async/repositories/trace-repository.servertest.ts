@@ -16,7 +16,7 @@ describe("Clickhouse Traces Repository Test", () => {
   });
 
   it("should throw if no traces are found", async () => {
-    expect(await getTraceById(v4(), v4())).toBeUndefined();
+    expect(await getTraceById({ traceId: v4(), projectId: v4() })).toBeUndefined();
   });
 
   it("should return a trace if it exists", async () => {
@@ -35,6 +35,14 @@ describe("Clickhouse Traces Repository Test", () => {
       release: null,
       version: null,
       user_id: null,
+      input: JSON.stringify({
+        this: {
+          is: {
+            a: ["complex", "object"],
+          },
+        },
+      }),
+      output: "regular string",
       created_at: Date.now(),
       updated_at: Date.now(),
       event_ts: Date.now(),
@@ -43,11 +51,11 @@ describe("Clickhouse Traces Repository Test", () => {
 
     await createTracesCh([trace]);
 
-    const result = await getTraceById(
+    const result = await getTraceById({
       traceId,
       projectId,
-      new Date(trace.timestamp),
-    );
+      timestamp: new Date(trace.timestamp),
+    });
     expect(result).not.toBeNull();
     if (!result) {
       return;
@@ -63,8 +71,8 @@ describe("Clickhouse Traces Repository Test", () => {
     expect(result.userId).toEqual(trace.user_id);
     expect(result.sessionId).toEqual(trace.session_id);
     expect(result.public).toEqual(trace.public);
-    expect(result.input).toEqual(null);
-    expect(result.output).toEqual(null);
+    expect(result.input).toEqual(JSON.parse(trace.input));
+    expect(result.output).toEqual("regular string");
     expect(result.metadata).toEqual(trace.metadata);
     expect(result.createdAt).toEqual(new Date(trace.created_at));
     expect(result.updatedAt).toEqual(new Date(trace.updated_at));
@@ -94,7 +102,7 @@ describe("Clickhouse Traces Repository Test", () => {
 
     await createTracesCh([trace]);
 
-    const result = await getTraceById(traceId, projectId);
+    const result = await getTraceById({ traceId, projectId });
     expect(result).not.toBeNull();
     if (!result) {
       return;
@@ -302,6 +310,54 @@ describe("Clickhouse Traces Repository Test", () => {
     await createObservationsCh(observations);
 
     const exists = await checkTraceExists(projectId, traceId, new Date(), []);
+    expect(exists).toBe(true);
+  });
+  it("should check if trace exists with error level count > 0", async () => {
+    const traceId = v4();
+    const trace = createTrace({
+      id: traceId,
+      user_id: "user-1",
+      project_id: "7a88fb47-b4e2-43b8-a06c-a5ce950dc53a",
+      metadata: { key: "value" },
+      release: "1.0.0",
+      version: "2.0.0",
+    });
+
+    const observations = [
+      createObservation({
+        trace_id: trace.id,
+        project_id: trace.project_id,
+        name: "observation-name",
+        end_time: new Date().getTime(),
+        start_time: new Date().getTime() - 1000,
+        input: "input",
+        output: "output",
+        provided_model_name: "model-1",
+        level: "ERROR",
+      }),
+      createObservation({
+        trace_id: trace.id,
+        project_id: trace.project_id,
+        name: "observation-name-2",
+        end_time: new Date().getTime(),
+        start_time: new Date().getTime() - 100000,
+        input: "input-2",
+        output: "output-2",
+        provided_model_name: "model-2",
+      }),
+    ];
+
+    await createTracesCh([trace]);
+    await createObservationsCh(observations);
+
+    const exists = await checkTraceExists(projectId, traceId, new Date(), [
+      {
+        type: "number",
+        column: "errorCount",
+        operator: ">",
+        value: 0,
+      },
+    ]);
     expect(exists).toBe(true);
   });
 });

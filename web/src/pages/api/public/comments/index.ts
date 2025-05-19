@@ -1,5 +1,5 @@
 import { withMiddlewares } from "@/src/features/public-api/server/withMiddlewares";
-import { createAuthedAPIRoute } from "@/src/features/public-api/server/createAuthedAPIRoute";
+import { createAuthedProjectAPIRoute } from "@/src/features/public-api/server/createAuthedProjectAPIRoute";
 import {
   GetCommentsV1Query,
   GetCommentsV1Response,
@@ -10,9 +10,10 @@ import { prisma } from "@langfuse/shared/src/db";
 import { v4 } from "uuid";
 import { validateCommentReferenceObject } from "@/src/features/comments/validateCommentReferenceObject";
 import { LangfuseNotFoundError } from "@langfuse/shared";
+import { auditLog } from "@/src/features/audit-logs/auditLog";
 
 export default withMiddlewares({
-  POST: createAuthedAPIRoute({
+  POST: createAuthedProjectAPIRoute({
     name: "Create Comment",
     bodySchema: PostCommentsV1Body,
     responseSchema: PostCommentsV1Response,
@@ -34,10 +35,20 @@ export default withMiddlewares({
         },
       });
 
+      await auditLog({
+        action: "create",
+        resourceType: "comment",
+        resourceId: comment.id,
+        projectId: auth.scope.projectId,
+        orgId: auth.scope.orgId,
+        apiKeyId: auth.scope.apiKeyId,
+        after: comment,
+      });
+
       return { id: comment.id };
     },
   }),
-  GET: createAuthedAPIRoute({
+  GET: createAuthedProjectAPIRoute({
     name: "Get Comments",
     querySchema: GetCommentsV1Query,
     responseSchema: GetCommentsV1Response,

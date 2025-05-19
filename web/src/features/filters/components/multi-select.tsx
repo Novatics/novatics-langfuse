@@ -5,14 +5,14 @@ import { cn } from "@/src/utils/tailwind";
 import { Badge } from "@/src/components/ui/badge";
 import { Button } from "@/src/components/ui/button";
 import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-  CommandSeparator,
-} from "@/src/components/ui/command";
+  InputCommand,
+  InputCommandEmpty,
+  InputCommandGroup,
+  InputCommandInput,
+  InputCommandItem,
+  InputCommandList,
+  InputCommandSeparator,
+} from "@/src/components/ui/input-command";
 import {
   Popover,
   PopoverContent,
@@ -34,6 +34,7 @@ const getFreeTextInput = (
 
 export function MultiSelect({
   title,
+  label,
   values,
   onValueChange,
   options,
@@ -42,6 +43,7 @@ export function MultiSelect({
   isCustomSelectEnabled = false,
 }: {
   title?: string;
+  label?: string;
   values: string[];
   onValueChange: (values: string[]) => void;
   options: FilterOption[] | readonly FilterOption[];
@@ -96,16 +98,16 @@ export function MultiSelect({
         <Button
           variant="outline"
           className={cn(
-            "flex h-8 w-full items-center justify-between rounded-md border border-input bg-transparent px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50",
+            "flex h-8 w-full items-center justify-between gap-x-2 rounded-md border border-input bg-transparent px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50",
             className,
           )}
           disabled={disabled}
         >
-          Select
+          {label ?? "Select"}
           <ChevronDown className="h-4 w-4 opacity-50" />
           {selectedValues.size > 0 && (
             <>
-              <Separator orientation="vertical" className="mx-2 h-4" />
+              <Separator orientation="vertical" className="mr-auto h-4" />
               <Badge
                 variant="secondary"
                 className="rounded-sm px-1 font-normal lg:hidden"
@@ -137,18 +139,19 @@ export function MultiSelect({
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-[200px] p-0" align="center">
-        <Command>
-          <CommandInput placeholder={title} />
-          <CommandList>
+        <InputCommand>
+          <InputCommandInput placeholder={title} />
+          <InputCommandList>
             {/* if isCustomSelectEnabled we always show custom select hence never empty */}
             {!isCustomSelectEnabled && (
-              <CommandEmpty>No results found.</CommandEmpty>
+              <InputCommandEmpty>No results found.</InputCommandEmpty>
             )}
-            <CommandGroup>
+            <InputCommandGroup>
               {options.map((option) => {
+                if (option.value.length === 0) return;
                 const isSelected = selectedValues.has(option.value);
                 return (
-                  <CommandItem
+                  <InputCommandItem
                     key={option.value}
                     onSelect={() => {
                       if (isSelected) {
@@ -170,22 +173,25 @@ export function MultiSelect({
                     >
                       <Check className={cn("h-4 w-4")} />
                     </div>
-                    <span className="overflow-x-scroll">
+                    <div
+                      className="overflow-x-hidden text-ellipsis whitespace-nowrap"
+                      title={option.displayValue ?? option.value}
+                    >
                       {option.displayValue ?? option.value}
-                    </span>
+                    </div>
                     {option.count !== undefined ? (
                       <span className="ml-auto flex h-4 w-4 items-center justify-center pl-1 font-mono text-xs">
                         {option.count}
                       </span>
                     ) : null}
-                  </CommandItem>
+                  </InputCommandItem>
                 );
               })}
-            </CommandGroup>
+            </InputCommandGroup>
             {isCustomSelectEnabled && (
-              <CommandGroup forceMount={true}>
-                <CommandSeparator />
-                <CommandItem
+              <InputCommandGroup forceMount={true}>
+                <InputCommandSeparator />
+                <InputCommandItem
                   key="freeTextField"
                   onSelect={() => {
                     const freeTextInput = getFreeTextInput(
@@ -238,24 +244,24 @@ export function MultiSelect({
                     placeholder="Enter custom value"
                     className="h-6 w-full rounded-none border-b-2 border-l-0 border-r-0 border-t-0 border-dotted p-0 text-sm"
                   />
-                </CommandItem>
-              </CommandGroup>
+                </InputCommandItem>
+              </InputCommandGroup>
             )}
             {selectedValues.size > 0 && (
               <>
-                <CommandSeparator />
-                <CommandGroup>
-                  <CommandItem
+                <InputCommandSeparator />
+                <InputCommandGroup>
+                  <InputCommandItem
                     onSelect={() => onValueChange([])}
                     className="justify-center text-center"
                   >
                     Clear filters
-                  </CommandItem>
-                </CommandGroup>
+                  </InputCommandItem>
+                </InputCommandGroup>
               </>
             )}
-          </CommandList>
-        </Command>
+          </InputCommandList>
+        </InputCommand>
       </PopoverContent>
     </Popover>
   );

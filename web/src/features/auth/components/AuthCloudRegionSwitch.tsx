@@ -10,6 +10,7 @@ import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePos
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -32,18 +33,26 @@ const regions =
             flag: "🚧",
           },
         ]
-      : [
-          {
-            name: "US",
-            hostname: "us.cloud.langfuse.com",
-            flag: "🇺🇸",
-          },
-          {
-            name: "EU",
-            hostname: "cloud.langfuse.com",
-            flag: "🇪🇺",
-          },
-        ];
+      : env.NEXT_PUBLIC_LANGFUSE_CLOUD_REGION === "HIPAA"
+        ? [
+            {
+              name: "HIPAA",
+              hostname: "hipaa.cloud.langfuse.com",
+              flag: "⚕️",
+            },
+          ]
+        : [
+            {
+              name: "US",
+              hostname: "us.cloud.langfuse.com",
+              flag: "🇺🇸",
+            },
+            {
+              name: "EU",
+              hostname: "cloud.langfuse.com",
+              flag: "🇪🇺",
+            },
+          ];
 
 export function CloudRegionSwitch({
   isSignUpPage,
@@ -59,8 +68,8 @@ export function CloudRegionSwitch({
   );
 
   return (
-    <div>
-      <div className="mb-6 flex w-full flex-col gap-2">
+    <div className="-mb-10 mt-8 rounded-lg bg-card px-6 py-6 text-sm sm:mx-auto sm:w-full sm:max-w-[480px] sm:rounded-lg sm:px-10">
+      <div className="flex w-full flex-col gap-2">
         <div>
           <span className="text-sm font-medium leading-none">
             Data Region
@@ -115,6 +124,7 @@ const DataRegionInfo = () => (
         href="#"
         className="ml-1 text-xs text-primary-accent hover:text-hover-primary-accent"
         title="What is this?"
+        tabIndex={-1}
       >
         (what is this?)
       </a>
@@ -123,16 +133,17 @@ const DataRegionInfo = () => (
       <DialogHeader>
         <DialogTitle>Data Regions</DialogTitle>
       </DialogHeader>
-      <div className="flex flex-col gap-2">
+      <DialogDescription className="flex flex-col gap-2">
         <p>Langfuse Cloud is available in two data regions:</p>
         <ul className="list-disc pl-5">
-          <li>US: Northern California (AWS us-west-1) & Virginia (AWS us-east-1)</li>
-          <li>EU: Germany/Frankfurt (AWS eu-central-1) & Ireland (AWS eu-west-1)</li>
+          <li>US: Oregon (AWS us-west-2)</li>
+          <li>EU: Ireland (AWS eu-west-1)</li>
         </ul>
         <p>
           Regions are strictly separated, and no data is shared across regions.
           Choosing a region close to you can help improve speed and comply with
-          local data residency laws and privacy regulations.
+          local data residency laws and privacy regulations. Contact us to
+          onboard into a HIPAA compliant region.
         </p>
         <p>
           You can have accounts in both regions and data migrations are
@@ -150,7 +161,7 @@ const DataRegionInfo = () => (
           </a>
           .
         </p>
-      </div>
+      </DialogDescription>
     </DialogContent>
   </Dialog>
 );

@@ -1,5 +1,4 @@
 import { GroupedScoreBadges } from "@/src/components/grouped-score-badge";
-import Header from "@/src/components/layouts/header";
 import { ErrorPage } from "@/src/components/error-page";
 import { PublishSessionSwitch } from "@/src/components/publish-object-switch";
 import { StarSessionToggle } from "@/src/components/star-toggle";
@@ -18,12 +17,117 @@ import { Button } from "@/src/components/ui/button";
 import useLocalStorage from "@/src/components/useLocalStorage";
 import { CommentDrawerButton } from "@/src/features/comments/CommentDrawerButton";
 import { useSession } from "next-auth/react";
-import { ScrollScreenPage } from "@/src/components/layouts/scroll-screen-page";
-import { useClickhouse } from "@/src/components/layouts/ClickhouseAdminToggle";
+import Page from "@/src/components/layouts/page";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/src/components/ui/popover";
+import { ScrollArea } from "@/src/components/ui/scroll-area";
+import { Label } from "@/src/components/ui/label";
+import { type APIScoreV2 } from "@langfuse/shared";
 
 // some projects have thousands of traces in a sessions, paginate to avoid rendering all at once
 const PAGE_SIZE = 50;
+// some projects have thousands of users in a session, paginate to avoid rendering all at once
+const INITIAL_USERS_DISPLAY_COUNT = 10;
+const USERS_PER_PAGE_IN_POPOVER = 50;
 
+export function SessionUsers({
+  projectId,
+  users,
+}: {
+  projectId: string;
+  users?: string[];
+}) {
+  const [page, setPage] = useState(0);
+
+  if (!users) return null;
+
+  const initialUsers = users?.slice(0, INITIAL_USERS_DISPLAY_COUNT);
+  const remainingUsers = users?.slice(INITIAL_USERS_DISPLAY_COUNT);
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {initialUsers.map((userId: string) => (
+        <Link
+          key={userId}
+          href={`/project/${projectId}/users/${encodeURIComponent(userId ?? "")}`}
+        >
+          <Badge className="max-w-[300px] truncate">User ID: {userId}</Badge>
+        </Link>
+      ))}
+
+      {remainingUsers.length > 0 && (
+        <Popover modal>
+          <PopoverTrigger asChild>
+            <Button variant="outline" size="sm" className="mt-0.5">
+              +{remainingUsers.length} more users
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-[300px]">
+            <Label className="text-base capitalize">Session Users</Label>
+            <ScrollArea className="h-[300px]">
+              <div className="flex flex-col gap-2 p-2">
+                {remainingUsers
+                  .slice(
+                    page * USERS_PER_PAGE_IN_POPOVER,
+                    (page + 1) * USERS_PER_PAGE_IN_POPOVER,
+                  )
+                  .map((userId: string) => (
+                    <Link
+                      key={userId}
+                      href={`/project/${projectId}/users/${encodeURIComponent(userId ?? "")}`}
+                      className="block hover:bg-accent"
+                    >
+                      <Badge className="max-w-[260px] truncate">
+                        User ID: {userId}
+                      </Badge>
+                    </Link>
+                  ))}
+              </div>
+            </ScrollArea>
+            {remainingUsers.length > USERS_PER_PAGE_IN_POPOVER && (
+              <div className="flex items-center justify-between border-t p-2 pt-4">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage((p) => Math.max(0, p - 1))}
+                  disabled={page === 0}
+                >
+                  Previous
+                </Button>
+                <span className="text-sm text-muted-foreground">
+                  Page {page + 1} of{" "}
+                  {Math.ceil(remainingUsers.length / USERS_PER_PAGE_IN_POPOVER)}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage((p) => p + 1)}
+                  disabled={
+                    (page + 1) * USERS_PER_PAGE_IN_POPOVER >=
+                    remainingUsers.length
+                  }
+                >
+                  Next
+                </Button>
+              </div>
+            )}
+          </PopoverContent>
+        </Popover>
+      )}
+    </div>
+  );
+}
+
+const SessionScores = ({ scores }: { scores: APIScoreV2[] }) => {
+  return (
+    <div className="flex flex-wrap gap-1">
+      <GroupedScoreBadges scores={scores} />
+    </div>
+  );
+};
 export const SessionPage: React.FC<{
   sessionId: string;
   projectId: string;
@@ -31,11 +135,10 @@ export const SessionPage: React.FC<{
   const { setDetailPageList } = useDetailPageLists();
   const userSession = useSession();
   const [visibleTraces, setVisibleTraces] = useState(PAGE_SIZE);
-  const session = api.sessions.byId.useQuery(
+  const session = api.sessions.byIdWithScores.useQuery(
     {
       sessionId,
       projectId: projectId,
-      queryClickhouse: useClickhouse(),
     },
     {
       retry(failureCount, error) {
@@ -76,7 +179,6 @@ export const SessionPage: React.FC<{
       {
         projectId,
         sessionId,
-        queryClickhouse: useClickhouse(),
       },
       { enabled: session.isSuccess && userSession.status === "authenticated" },
     );
@@ -97,64 +199,78 @@ export const SessionPage: React.FC<{
     );
 
   return (
-    <ScrollScreenPage>
-      <Header
-        title="Session"
-        breadcrumb={[
+    <Page
+      withPadding
+      scrollable
+      headerProps={{
+        title: sessionId,
+        itemType: "SESSION",
+        breadcrumb: [
           {
             name: "Sessions",
             href: `/project/${projectId}/sessions`,
           },
-          { name: sessionId },
-        ]}
-        actionButtons={[
-          <StarSessionToggle
-            key="star"
-            projectId={projectId}
-            sessionId={sessionId}
-            value={session.data?.bookmarked ?? false}
-          />,
-          <PublishSessionSwitch
-            projectId={projectId}
-            sessionId={sessionId}
-            isPublic={session.data?.public ?? false}
-            key="publish"
-          />,
-          <DetailPageNav
-            key="nav"
-            currentId={encodeURIComponent(sessionId)}
-            path={(entry) =>
-              `/project/${projectId}/sessions/${encodeURIComponent(entry.id)}`
-            }
-            listKey="sessions"
-          />,
-          <CommentDrawerButton
-            key="comment"
-            variant="outline"
-            projectId={projectId}
-            objectId={sessionId}
-            objectType="SESSION"
-            count={sessionCommentCounts.data?.get(sessionId)}
-          />,
-        ]}
-      />
+        ],
+        actionButtonsLeft: (
+          <div className="flex items-center gap-0">
+            <StarSessionToggle
+              key="star"
+              projectId={projectId}
+              sessionId={sessionId}
+              value={session.data?.bookmarked ?? false}
+              size="icon-xs"
+            />
+            <PublishSessionSwitch
+              projectId={projectId}
+              sessionId={sessionId}
+              isPublic={session.data?.public ?? false}
+              key="publish"
+              size="icon-xs"
+            />
+          </div>
+        ),
+        actionButtonsRight: (
+          <>
+            <DetailPageNav
+              key="nav"
+              currentId={encodeURIComponent(sessionId)}
+              path={(entry) =>
+                `/project/${projectId}/sessions/${encodeURIComponent(entry.id)}`
+              }
+              listKey="sessions"
+            />
+            <CommentDrawerButton
+              key="comment"
+              variant="outline"
+              projectId={projectId}
+              objectId={sessionId}
+              objectType="SESSION"
+              count={sessionCommentCounts.data?.get(sessionId)}
+            />
+            <AnnotateDrawer
+              projectId={projectId}
+              scoreTarget={{
+                type: "session",
+                sessionId,
+              }}
+              scores={session.data?.scores ?? []}
+              emptySelectedConfigIds={emptySelectedConfigIds}
+              setEmptySelectedConfigIds={setEmptySelectedConfigIds}
+              buttonVariant="outline"
+            />
+          </>
+        ),
+      }}
+    >
       <div className="flex flex-wrap gap-2">
-        {session.data?.users.filter(Boolean).map((userId) => (
-          <Link
-            key={userId}
-            href={`/project/${projectId}/users/${encodeURIComponent(
-              userId ?? "",
-            )}`}
-          >
-            <Badge className="max-w-[300px] truncate">User ID: {userId}</Badge>
-          </Link>
-        ))}
+        <SessionUsers projectId={projectId} users={session.data?.users} />
         <Badge variant="outline">Traces: {session.data?.traces.length}</Badge>
         {session.data && (
           <Badge variant="outline">
             Total cost: {usdFormatter(session.data.totalCost, 2)}
           </Badge>
         )}
+        <SessionScores scores={session.data?.scores ?? []} />
       </div>
       <div className="mt-5 flex flex-col gap-2 border-t pt-5">
         {session.data?.traces.slice(0, visibleTraces).map((trace) => (
@@ -163,7 +279,11 @@ export const SessionPage: React.FC<{
             key={trace.id}
           >
             <div className="col-span-2 overflow-hidden">
-              <SessionIO traceId={trace.id} projectId={projectId} />
+              <SessionIO
+                traceId={trace.id}
+                projectId={projectId}
+                timestamp={trace.timestamp}
+              />
             </div>
             <div className="-mt-1 p-1 opacity-50 transition-opacity group-hover:opacity-100">
               <Link
@@ -184,14 +304,17 @@ export const SessionPage: React.FC<{
               <div className="flex items-center gap-1">
                 <AnnotateDrawer
                   projectId={projectId}
-                  traceId={trace.id}
+                  scoreTarget={{
+                    type: "trace",
+                    traceId: trace.id,
+                  }}
                   scores={trace.scores}
                   emptySelectedConfigIds={emptySelectedConfigIds}
                   setEmptySelectedConfigIds={setEmptySelectedConfigIds}
                   variant="badge"
-                  type="session"
-                  source="SessionDetail"
+                  analyticsData={{ type: "trace", source: "SessionDetail" }}
                   key={"annotation-drawer" + trace.id}
+                  environment={trace.environment}
                 />
                 <CommentDrawerButton
                   projectId={projectId}
@@ -214,19 +337,21 @@ export const SessionPage: React.FC<{
           </Button>
         )}
       </div>
-    </ScrollScreenPage>
+    </Page>
   );
 };
 
 const SessionIO = ({
   traceId,
   projectId,
+  timestamp,
 }: {
   traceId: string;
   projectId: string;
+  timestamp: Date;
 }) => {
   const trace = api.traces.byId.useQuery(
-    { traceId, projectId, queryClickhouse: useClickhouse() },
+    { traceId, projectId, timestamp },
     {
       enabled: typeof traceId === "string",
       trpc: {

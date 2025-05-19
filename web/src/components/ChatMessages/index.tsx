@@ -2,7 +2,11 @@ import { PlusCircleIcon } from "lucide-react";
 import { useEffect, useRef } from "react";
 
 import { Button } from "@/src/components/ui/button";
-import { ChatMessageRole } from "@langfuse/shared";
+import {
+  ChatMessageRole,
+  ChatMessageType,
+  SYSTEM_ROLES,
+} from "@langfuse/shared";
 
 import { ChatMessageComponent } from "./ChatMessageComponent";
 
@@ -57,7 +61,7 @@ export const ChatMessages: React.FC<ChatMessagesProps> = (props) => {
           return;
         }
         // prevent reordering system messages
-        if (messages[newIndex].role === ChatMessageRole.System) {
+        if (SYSTEM_ROLES.includes(messages[newIndex].role)) {
           return;
         }
         const newMessages = arrayMove(messages, oldIndex, newIndex);
@@ -74,18 +78,23 @@ export const ChatMessages: React.FC<ChatMessagesProps> = (props) => {
       sensors={sensors}
     >
       <div className="flex h-full flex-col">
-        <div className="mb-2 font-semibold">Messages</div>
         <div className="flex-1 overflow-auto scroll-smooth" ref={scrollAreaRef}>
-          <div className="mb-4 flex-1 space-y-3">
+          <div className="mb-4 flex-1 space-y-2">
             <SortableContext
               items={props.messages.map((message) => message.id)}
               strategy={verticalListSortingStrategy}
             >
-              {props.messages.map((message) => {
+              {props.messages.map((message, index) => {
                 return (
                   <ChatMessageComponent
-                    {...{ message, ...props }}
                     key={message.id}
+                    message={message}
+                    index={index}
+                    deleteMessage={props.deleteMessage}
+                    updateMessage={props.updateMessage}
+                    replaceMessage={props.replaceMessage}
+                    availableRoles={props.availableRoles}
+                    toolCallIds={props.toolCallIds}
                   />
                 );
               })}
@@ -116,7 +125,21 @@ const AddMessageButton: React.FC<AddMessageButtonProps> = ({
       type="button" // prevents submitting a form if this button is inside a form
       variant="outline"
       className="w-full"
-      onClick={() => addMessage(nextMessageRole)}
+      onClick={() => {
+        if (nextMessageRole === ChatMessageRole.User) {
+          addMessage({
+            role: nextMessageRole,
+            content: "",
+            type: ChatMessageType.User,
+          });
+        } else {
+          addMessage({
+            role: nextMessageRole,
+            content: "",
+            type: ChatMessageType.AssistantText,
+          });
+        }
+      }}
     >
       <PlusCircleIcon size={14} className="mr-2" />
       <p>Add message</p>

@@ -7,14 +7,12 @@ import { BarList } from "@tremor/react";
 import { TotalMetric } from "@/src/features/dashboard/components/TotalMetric";
 import { ExpandListButton } from "@/src/features/dashboard/components/cards/ChevronButton";
 import { useState } from "react";
-import {
-  createTracesTimeFilter,
-  totalCostDashboardFormatted,
-} from "@/src/features/dashboard/lib/dashboard-utils";
-import { env } from "@/src/env.mjs";
-import { type DashboardDateRangeAggregationOption } from "@/src/utils/date-range-utils";
+import { totalCostDashboardFormatted } from "@/src/features/dashboard/lib/dashboard-utils";
 import { NoDataOrLoading } from "@/src/components/NoDataOrLoading";
-import { useClickhouse } from "@/src/components/layouts/ClickhouseAdminToggle";
+import {
+  type QueryType,
+  mapLegacyUiTableFilterToView,
+} from "@/src/features/query";
 
 type BarChartDataPoint = {
   name: string;
@@ -25,44 +23,44 @@ export const UserChart = ({
   className,
   projectId,
   globalFilterState,
+  fromTimestamp,
+  toTimestamp,
+  isLoading = false,
 }: {
   className?: string;
   projectId: string;
   globalFilterState: FilterState;
-  agg: DashboardDateRangeAggregationOption;
+  fromTimestamp: Date;
+  toTimestamp: Date;
+  isLoading?: boolean;
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
-  const user = api.dashboard.chart.useQuery(
+  const userCostQuery: QueryType = {
+    view: "observations",
+    dimensions: [{ field: "userId" }],
+    metrics: [
+      { measure: "totalCost", aggregation: "sum" },
+      { measure: "count", aggregation: "count" },
+    ],
+    filters: [
+      ...mapLegacyUiTableFilterToView("observations", globalFilterState),
+      {
+        column: "type",
+        operator: "=",
+        value: "GENERATION",
+        type: "string",
+      },
+    ],
+    timeDimension: null,
+    fromTimestamp: fromTimestamp.toISOString(),
+    toTimestamp: toTimestamp.toISOString(),
+    orderBy: null,
+  };
+
+  const user = api.dashboard.executeQuery.useQuery(
     {
       projectId,
-      from: env.NEXT_PUBLIC_LANGFUSE_CLOUD_REGION // Langfuse Cloud has already completed the cost backfill job, thus cost can be pulled directly from obs. table
-        ? "traces_observations"
-        : "traces_observationsview",
-      select: [
-        { column: "calculatedTotalCost", agg: "SUM" },
-        { column: "user" },
-        { column: "traceId", agg: "COUNT" },
-      ],
-      filter: [
-        ...globalFilterState,
-        {
-          type: "string",
-          column: "type",
-          operator: "=",
-          value: "GENERATION",
-        },
-      ],
-      groupBy: [
-        {
-          type: "string",
-          column: "user",
-        },
-      ],
-      orderBy: [
-        { column: "calculatedTotalCost", direction: "DESC", agg: "SUM" },
-      ],
-      queryClickhouse: useClickhouse(),
-      queryName: "observations-usage-by-users",
+      query: userCostQuery,
     },
     {
       trpc: {
@@ -70,24 +68,25 @@ export const UserChart = ({
           skipBatch: true,
         },
       },
+      enabled: !isLoading,
     },
   );
 
-  const traces = api.dashboard.chart.useQuery(
+  const traceCountQuery: QueryType = {
+    view: "traces",
+    dimensions: [{ field: "userId" }],
+    metrics: [{ measure: "count", aggregation: "count" }],
+    filters: mapLegacyUiTableFilterToView("traces", globalFilterState),
+    timeDimension: null,
+    fromTimestamp: fromTimestamp.toISOString(),
+    toTimestamp: toTimestamp.toISOString(),
+    orderBy: null,
+  };
+
+  const traces = api.dashboard.executeQuery.useQuery(
     {
       projectId,
-      from: "traces",
-      select: [{ column: "user" }, { column: "traceId", agg: "COUNT" }],
-      filter: createTracesTimeFilter(globalFilterState),
-      groupBy: [
-        {
-          type: "string",
-          column: "user",
-        },
-      ],
-      orderBy: [{ column: "traceId", agg: "COUNT", direction: "DESC" }],
-      queryClickhouse: useClickhouse(),
-      queryName: "traces-grouped-by-user",
+      query: traceCountQuery,
     },
     {
       trpc: {
@@ -95,40 +94,39 @@ export const UserChart = ({
           skipBatch: true,
         },
       },
+      enabled: !isLoading,
     },
   );
 
   const transformedNumberOfTraces: BarChartDataPoint[] = traces.data
     ? traces.data
-        .filter((item) => item.user !== undefined)
+        .filter((item) => item.userId !== undefined)
         .map((item) => {
           return {
-            name: item.user as string,
-            value: item.countTraceId ? (item.countTraceId as number) : 0,
+            name: item.userId as string,
+            value: item.count_count ? Number(item.count_count) : 0,
           };
         })
     : [];
 
   const transformedCost: BarChartDataPoint[] = user.data
     ? user.data
-        .filter((item) => item.user !== undefined)
+        .filter((item) => item.userId !== undefined)
         .map((item) => {
           return {
-            name: (item.user as string | null | undefined) ?? "Unknown",
-            value: item.sumCalculatedTotalCost
-              ? (item.sumCalculatedTotalCost as number)
-              : 0,
+            name: (item.userId as string | null | undefined) ?? "Unknown",
+            value: item.sum_totalCost ? Number(item.sum_totalCost) : 0,
           };
         })
     : [];
 
   const totalCost = user.data?.reduce(
-    (acc, curr) => acc + (curr.sumCalculatedTotalCost as number),
+    (acc, curr) => acc + (Number(curr.sum_totalCost) || 0),
     0,
   );
 
   const totalTraces = traces.data?.reduce(
-    (acc, curr) => acc + (curr.countTraceId as number),
+    (acc, curr) => acc + (Number(curr.count_count) || 0),
     0,
   );
 
@@ -163,7 +161,7 @@ export const UserChart = ({
     <DashboardCard
       className={className}
       title="User consumption"
-      isLoading={user.isLoading}
+      isLoading={isLoading || user.isLoading}
     >
       <TabComponent
         tabs={data.map((item) => {
@@ -187,7 +185,7 @@ export const UserChart = ({
                   </>
                 ) : (
                   <NoDataOrLoading
-                    isLoading={user.isLoading}
+                    isLoading={isLoading || user.isLoading}
                     description="Consumption per user is tracked by passing their ids on traces."
                     href="https://langfuse.com/docs/tracing-features/users"
                   />

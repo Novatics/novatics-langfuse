@@ -13,19 +13,18 @@ import { useQueryProjectOrOrganization } from "@/src/features/projects/hooks";
 import { useEntitlements } from "@/src/features/entitlements/hooks";
 import { useUiCustomization } from "@/src/ee/features/ui-customization/useUiCustomization";
 import { hasOrganizationAccess } from "@/src/features/rbac/utils/checkOrganizationAccess";
-import { ClickhouseAdminToggle } from "@/src/components/layouts/ClickhouseAdminToggle";
 import { SidebarInset, SidebarProvider } from "@/src/components/ui/sidebar";
-import { AppSidebar } from "@/src/components/app-sidebar";
+import { AppSidebar } from "@/src/components/nav/app-sidebar";
+import { CommandMenu } from "@/src/features/command-k-menu/CommandMenu";
 
 const signOutUser = async () => {
-  localStorage.clear();
   sessionStorage.clear();
 
   await signOut();
 };
 
-const getUserNavigation = (isAdmin: boolean) => {
-  const navigationItems = [
+const getUserNavigation = () => {
+  return [
     {
       name: "Theme",
       onClick: () => {},
@@ -36,17 +35,6 @@ const getUserNavigation = (isAdmin: boolean) => {
       onClick: signOutUser,
     },
   ];
-
-  return isAdmin
-    ? [
-        {
-          name: "CH Query",
-          onClick: () => {},
-          content: <ClickhouseAdminToggle />,
-        },
-        ...navigationItems,
-      ]
-    : navigationItems;
 };
 
 const pathsWithoutNavigation: string[] = [
@@ -80,7 +68,17 @@ function useSessionWithRetryOnUnauthenticated() {
   useEffect(() => {
     if (session.status === "unauthenticated" && retryCount < MAX_RETRIES) {
       const fetchSession = async () => {
-        await getSession({ broadcast: true });
+        try {
+          await getSession({ broadcast: true });
+        } catch (error) {
+          console.error(
+            "Error fetching session:",
+            error,
+            "\nError details:",
+            JSON.stringify(error, null, 2),
+          );
+          throw error;
+        }
         setRetryCount((prevCount) => prevCount + 1);
       };
       fetchSession();
@@ -122,6 +120,14 @@ export default function Layout(props: PropsWithChildren) {
     if (!routerProjectId && route.pathname.includes("[projectId]")) return null;
     // Organization-level routes
     if (!routerOrganizationId && route.pathname.includes("[organizationId]"))
+      return null;
+
+    // UI customization – hide routes that belong to a disabled product module
+    if (
+      route.productModule &&
+      uiCustomization !== null &&
+      !uiCustomization.visibleModules.includes(route.productModule)
+    )
       return null;
 
     // Feature Flags
@@ -178,21 +184,14 @@ export default function Layout(props: PropsWithChildren) {
     const items: (NavigationItem | null)[] =
       route.items?.map((item) => mapNavigation(item)).filter(Boolean) ?? [];
 
-    const url = (
-      route.customizableHref
-        ? (uiCustomization?.[route.customizableHref] ?? route.pathname)
-        : route.pathname
-    )
+    const url = route.pathname
+
       ?.replace("[projectId]", routerProjectId ?? "")
       .replace("[organizationId]", routerOrganizationId ?? "");
 
     return {
       ...route,
       url: url,
-      newTab:
-        route.customizableHref && uiCustomization?.[route.customizableHref]
-          ? true
-          : route.newTab,
       isActive: router.pathname === route.pathname,
       items:
         items.length > 0
@@ -305,7 +304,7 @@ export default function Layout(props: PropsWithChildren) {
             navItems={topNavigation}
             secondaryNavItems={bottomNavigation}
             userNavProps={{
-              items: getUserNavigation(cloudAdmin),
+              items: getUserNavigation(),
               user: {
                 name: session.data?.user?.name ?? "",
                 email: session.data?.user?.email ?? "",
@@ -314,8 +313,9 @@ export default function Layout(props: PropsWithChildren) {
             }}
           />
           <SidebarInset className="h-dvh max-w-full md:peer-data-[state=collapsed]:w-[calc(100vw-var(--sidebar-width-icon))] md:peer-data-[state=expanded]:w-[calc(100vw-var(--sidebar-width))]">
-            <main className="h-full p-3">{props.children}</main>
+            <main className="h-full">{props.children}</main>
             <Toaster visibleToasts={1} />
+            <CommandMenu mainNavigation={navigation} />
           </SidebarInset>
         </SidebarProvider>
       </div>
@@ -327,7 +327,7 @@ export type NavigationItem = NestedNavigationItem & {
   items?: NestedNavigationItem[];
 };
 
-type NestedNavigationItem = Omit<Route, "children"> & {
+type NestedNavigationItem = Omit<Route, "children" | "items"> & {
   url: string;
   isActive: boolean;
 };

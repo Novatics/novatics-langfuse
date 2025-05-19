@@ -6,13 +6,15 @@ import {
   PostDatasetsV2Response,
 } from "@/src/features/public-api/types/datasets";
 import { withMiddlewares } from "@/src/features/public-api/server/withMiddlewares";
-import { createAuthedAPIRoute } from "@/src/features/public-api/server/createAuthedAPIRoute";
+import { createAuthedProjectAPIRoute } from "@/src/features/public-api/server/createAuthedProjectAPIRoute";
+import { auditLog } from "@/src/features/audit-logs/auditLog";
 
 export default withMiddlewares({
-  POST: createAuthedAPIRoute({
+  POST: createAuthedProjectAPIRoute({
     name: "Create Dataset",
     bodySchema: PostDatasetsV2Body,
     responseSchema: PostDatasetsV2Response,
+    rateLimitResource: "datasets",
     fn: async ({ body, auth }) => {
       const { name, description, metadata } = body;
 
@@ -35,13 +37,24 @@ export default withMiddlewares({
         },
       });
 
+      await auditLog({
+        action: "create",
+        resourceType: "dataset",
+        resourceId: dataset.id,
+        projectId: auth.scope.projectId,
+        orgId: auth.scope.orgId,
+        apiKeyId: auth.scope.apiKeyId,
+        after: dataset,
+      });
+
       return dataset;
     },
   }),
-  GET: createAuthedAPIRoute({
+  GET: createAuthedProjectAPIRoute({
     name: "Get Datasets",
     querySchema: GetDatasetsV2Query,
     responseSchema: GetDatasetsV2Response,
+    rateLimitResource: "datasets",
     fn: async ({ query, auth }) => {
       const datasets = await prisma.dataset.findMany({
         select: {

@@ -2,8 +2,6 @@ import {
   PrismaClient,
   type Project,
   type Prisma,
-  ObservationType,
-  ScoreSource,
   ScoreDataType,
   AnnotationQueueObjectType,
 } from "../src/index";
@@ -16,6 +14,7 @@ import { ModelUsageUnit } from "../src";
 import { getDisplaySecretKey, hashSecretKey, logger } from "../src/server";
 import { encrypt } from "../src/encryption";
 import { redis } from "../src/server/redis/redis";
+import { randomUUID } from "crypto";
 
 const LOAD_TRACE_VOLUME = 10_000;
 
@@ -74,6 +73,9 @@ async function main() {
     where: { id: seedOrgId },
     update: {
       name: "Seed Org",
+      cloudConfig: {
+        plan: "Team",
+      },
     },
     create: {
       id: seedOrgId,
@@ -97,7 +99,7 @@ async function main() {
     },
   });
 
-  const orgMembership = await prisma.organizationMembership.upsert({
+  await prisma.organizationMembership.upsert({
     where: {
       orgId_userId: {
         userId: user.id,
@@ -127,7 +129,7 @@ async function main() {
     update: {},
   });
 
-  const projectMembership = await prisma.projectMembership.upsert({
+  await prisma.projectMembership.upsert({
     where: {
       projectId_userId: {
         projectId: project1.id,
@@ -179,6 +181,7 @@ async function main() {
         publicKey: seedApiKey.public,
         hashedSecretKey: await hashSecretKey(seedApiKey.secret),
         displaySecretKey: getDisplaySecretKey(seedApiKey.secret),
+        scope: "PROJECT",
         project: {
           connect: {
             id: project1.id,
@@ -240,6 +243,7 @@ async function main() {
           publicKey: secondKey.public,
           hashedSecretKey: await hashSecretKey(secondKey.secret),
           displaySecretKey: getDisplaySecretKey(secondKey.secret),
+          scope: "PROJECT",
           project: {
             connect: {
               id: project2.id,
@@ -266,38 +270,23 @@ async function main() {
 
     const traceVolume = environment === "load" ? LOAD_TRACE_VOLUME : 100;
 
-    const {
-      traces,
-      observations,
-      scores,
-      sessions,
-      events,
-      comments,
-      queueItems,
-    } = createObjects(
-      traceVolume,
-      envTags,
-      colorTags,
-      project1,
-      project2,
-      promptIds,
-      queueIds,
-      configIdsAndNames,
-    );
+    const { traces, observations, scores, sessions, comments, queueItems } =
+      createObjects(
+        traceVolume,
+        envTags,
+        colorTags,
+        project1,
+        project2,
+        promptIds,
+        queueIds,
+        configIdsAndNames,
+      );
 
     logger.info(
       `Seeding ${traces.length} traces, ${observations.length} observations, and ${scores.length} scores`,
     );
 
-    await uploadObjects(
-      traces,
-      observations,
-      scores,
-      sessions,
-      events,
-      comments,
-      queueItems,
-    );
+    await uploadObjects(sessions, comments, queueItems);
 
     // If openai key is in environment, add it to the projects LLM API keys
     const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -388,6 +377,48 @@ async function main() {
     });
 
     await createDatasets(project1, project2, observations);
+
+    await createDashboardsAndWidgets([project1, project2]);
+
+    await prisma.llmSchema.createMany({
+      data: [
+        {
+          projectId: project1.id,
+          name: "get_weather",
+          description: "Fetches weather in Celsius for a given location",
+          schema: {
+            type: "object",
+            properties: {
+              location: {
+                type: "string",
+                description: "The city and state, e.g. San Francisco, CA",
+              },
+              unit: {
+                type: "string",
+                enum: ["celsius", "fahrenheit"],
+              },
+            },
+            required: ["location", "unit"],
+          },
+        },
+        {
+          projectId: project1.id,
+          name: "calculator",
+          description: "Performs basic arithmetic calculations",
+          schema: {
+            type: "object",
+            properties: {
+              expression: {
+                type: "string",
+                description:
+                  "The mathematical expression to evaluate, e.g. '2 + 2'",
+              },
+            },
+            required: ["expression"],
+          },
+        },
+      ],
+    });
   }
 }
 
@@ -405,6 +436,85 @@ main()
     process.exit(1);
   });
 
+async function createDashboardsAndWidgets(projects: Project[]) {
+  logger.info("Creating dashboards and widgets");
+
+  // Process each project
+  for (const project of projects) {
+    const widget = await prisma.dashboardWidget.upsert({
+      where: { id: "cabc" },
+      create: {
+        id: "cabc",
+        projectId: project.id,
+        name: "Trace Counts",
+        description: "Trace Counts by Name Over Time",
+        view: "TRACES",
+        dimensions: [{ field: "name" }],
+        metrics: [{ measure: "count", agg: "count" }],
+        filters: [],
+        chartType: "BAR_TIME_SERIES",
+        chartConfig: {
+          type: "BAR_TIME_SERIES",
+        },
+      },
+      update: {},
+    });
+
+    const widget2 = await prisma.dashboardWidget.upsert({
+      where: { id: "cdef" },
+      create: {
+        id: "cdef",
+        projectId: project.id,
+        name: "Observation Latencies by Model",
+        description: "p95 Observation Latencies by Model Name",
+        view: "OBSERVATIONS",
+        dimensions: [{ field: "providedModelName" }],
+        metrics: [{ measure: "count", agg: "sum" }],
+        filters: [],
+        chartType: "LINE_TIME_SERIES",
+        chartConfig: {
+          type: "LINE_TIME_SERIES",
+        },
+      },
+      update: {},
+    });
+
+    // Create a dashboard with multiple widgets
+    await prisma.dashboard.upsert({
+      where: { id: "seed-dashboard" },
+      create: {
+        id: "seed-dashboard",
+        projectId: project.id,
+        name: "Performance Overview",
+        description: "Dashboard with various performance metrics",
+        definition: {
+          widgets: [
+            {
+              type: "widget",
+              id: randomUUID(),
+              widgetId: widget.id,
+              x: 0,
+              y: 0,
+              x_size: 6,
+              y_size: 2,
+            },
+            {
+              type: "widget",
+              id: randomUUID(),
+              widgetId: widget2.id,
+              x: 6,
+              y: 0,
+              x_size: 6,
+              y_size: 2,
+            },
+          ],
+        },
+      },
+      update: {},
+    });
+  }
+}
+
 export async function createDatasets(
   project1: {
     id: string;
@@ -420,7 +530,7 @@ export async function createDatasets(
     updatedAt: Date;
     name: string;
   },
-  observations: Prisma.ObservationCreateManyInput[],
+  observations: { id?: string; projectId?: string; traceId?: string | null }[],
 ) {
   for (let datasetNumber = 0; datasetNumber < 2; datasetNumber++) {
     for (const projectId of [project1.id, project2.id]) {
@@ -532,11 +642,7 @@ export async function createDatasets(
 }
 
 async function uploadObjects(
-  traces: Prisma.TraceCreateManyInput[],
-  observations: Prisma.ObservationCreateManyInput[],
-  scores: Prisma.ScoreCreateManyInput[],
   sessions: Prisma.TraceSessionCreateManyInput[],
-  events: Prisma.ObservationCreateManyInput[],
   comments: Prisma.CommentCreateManyInput[],
   queueItems: Prisma.AnnotationQueueItemCreateManyInput[],
 ) {
@@ -560,73 +666,6 @@ async function uploadObjects(
     if (i + 1 >= promises.length || i % Math.ceil(promises.length / 10) === 0)
       logger.info(
         `Seeding of Sessions ${((i + 1) / promises.length) * 100}% complete`,
-      );
-    await promises[i];
-  }
-
-  promises = [];
-
-  chunk(traces, chunkSize).forEach((chunk) => {
-    promises.push(
-      prisma.trace.createMany({
-        data: chunk,
-      }),
-    );
-  });
-  for (let i = 0; i < promises.length; i++) {
-    if (i + 1 >= promises.length || i % Math.ceil(promises.length / 10) === 0)
-      logger.info(
-        `Seeding of Traces ${((i + 1) / promises.length) * 100}% complete`,
-      );
-    await promises[i];
-  }
-
-  promises = [];
-  chunk(observations, chunkSize).forEach((chunk) => {
-    promises.push(
-      prisma.observation.createMany({
-        data: chunk,
-      }),
-    );
-  });
-
-  for (let i = 0; i < promises.length; i++) {
-    if (i + 1 >= promises.length || i % Math.ceil(promises.length / 10) === 0)
-      logger.info(
-        `Seeding of Observations ${((i + 1) / promises.length) * 100}% complete`,
-      );
-    await promises[i];
-  }
-
-  promises = [];
-  chunk(events, chunkSize).forEach((chunk) => {
-    promises.push(
-      prisma.observation.createMany({
-        data: chunk,
-      }),
-    );
-  });
-
-  for (let i = 0; i < promises.length; i++) {
-    if (i + 1 >= promises.length || i % Math.ceil(promises.length / 10) === 0)
-      logger.info(
-        `Seeding of Events ${((i + 1) / promises.length) * 100}% complete`,
-      );
-    await promises[i];
-  }
-
-  promises = [];
-  chunk(scores, chunkSize).forEach((chunk) => {
-    promises.push(
-      prisma.score.createMany({
-        data: chunk,
-      }),
-    );
-  });
-  for (let i = 0; i < promises.length; i++) {
-    if (i + 1 >= promises.length || i % Math.ceil(promises.length / 10) === 0)
-      logger.info(
-        `Seeding of Scores ${((i + 1) / promises.length) * 100}% complete`,
       );
     await promises[i];
   }
@@ -682,11 +721,11 @@ function createObjects(
     }[]
   >,
 ) {
-  const traces: Prisma.TraceCreateManyInput[] = [];
-  const observations: Prisma.ObservationCreateManyInput[] = [];
-  const scores: Prisma.ScoreCreateManyInput[] = [];
+  const traces: any[] = [];
+  const observations: any[] = [];
+  const scores: any[] = [];
   const sessions: Prisma.TraceSessionCreateManyInput[] = [];
-  const events: Prisma.ObservationCreateManyInput[] = [];
+  const events: any[] = [];
   const configs: Prisma.ScoreConfigCreateManyInput[] = [];
   const comments: Prisma.CommentCreateManyInput[] = [];
   const queueItems: Prisma.AnnotationQueueItemCreateManyInput[] = [];
@@ -795,7 +834,7 @@ function createObjects(
               name: annotationScoreName,
               timestamp: traceTs,
               createdAt: traceTs,
-              source: ScoreSource.ANNOTATION,
+              source: "ANNOTATION",
               projectId,
               authorUserId: `user-${i}`,
               dataType,
@@ -812,9 +851,10 @@ function createObjects(
               value: Math.floor(Math.random() * 10) - 5,
               timestamp: traceTs,
               createdAt: traceTs,
-              source: ScoreSource.API,
+              source: "API",
               projectId,
               dataType: ScoreDataType.NUMERIC,
+              metadata: {},
             },
           ]
         : []),
@@ -825,11 +865,12 @@ function createObjects(
               name: "Completeness",
               timestamp: traceTs,
               createdAt: traceTs,
-              source: ScoreSource.API,
+              source: "API",
               projectId,
               dataType: ScoreDataType.CATEGORICAL,
               stringValue:
                 Math.floor(Math.random() * 2) === 1 ? "Fully" : "Partially",
+              metadata: {},
             },
           ]
         : []),
@@ -859,7 +900,7 @@ function createObjects(
       );
 
       const span = {
-        type: ObservationType.SPAN,
+        type: "SPAN",
         id: `span-${v4()}`,
         startTime: spanTsStart,
         createdAt: spanTsStart,
@@ -933,7 +974,7 @@ function createObjects(
         const { input, output } = getGenerationInputOutput();
 
         const generation = {
-          type: ObservationType.GENERATION,
+          type: "GENERATION",
           id: `generation-${v4()}`,
           startTime: generationTsStart,
           createdAt: generationTsStart,
@@ -978,7 +1019,7 @@ function createObjects(
             value: Math.random() * 2 - 1,
             observationId: generation.id,
             traceId: trace.id,
-            source: ScoreSource.API,
+            source: "API",
             projectId: trace.projectId,
             timestamp: generationTsEnd,
             createdAt: traceTs,
@@ -989,7 +1030,7 @@ function createObjects(
             value: Math.random() * 2 - 1,
             observationId: generation.id,
             traceId: trace.id,
-            source: ScoreSource.API,
+            source: "API",
             projectId: trace.projectId,
             timestamp: generationTsEnd,
             createdAt: traceTs,
@@ -1013,7 +1054,7 @@ function createObjects(
           );
 
           events.push({
-            type: ObservationType.EVENT,
+            type: "EVENT",
             id: `event-${v4()}`,
             startTime: eventTs,
             createdAt: eventTs,

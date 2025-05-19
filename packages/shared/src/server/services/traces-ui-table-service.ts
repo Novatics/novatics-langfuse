@@ -1,4 +1,3 @@
-import { ObservationLevel } from "@prisma/client";
 import { OrderByState } from "../../interfaces/orderBy";
 import { tracesTableUiColumnDefinitions } from "../../tableDefinitions";
 import { FilterState } from "../../types";
@@ -13,18 +12,19 @@ import {
 } from "../queries/clickhouse-sql/factory";
 import { orderByToClickhouseSql } from "../queries/clickhouse-sql/orderby-factory";
 import { clickhouseSearchCondition } from "../queries/clickhouse-sql/search";
-import {
-  parseClickhouseUTCDateTimeFormat,
-  queryClickhouse,
-} from "../repositories/clickhouse";
 import { TraceRecordReadType } from "../repositories/definitions";
+import Decimal from "decimal.js";
+import { ScoreAggregate } from "../../features/scores";
 import {
   OBSERVATIONS_TO_TRACE_INTERVAL,
   SCORE_TO_TRACE_OBSERVATIONS_INTERVAL,
-} from "../repositories/constants";
-import Decimal from "decimal.js";
-import { ScoreAggregate } from "../../features/scores";
-import { reduceUsageOrCostDetails } from "../repositories";
+  parseClickhouseUTCDateTimeFormat,
+  queryClickhouse,
+  reduceUsageOrCostDetails,
+} from "../repositories";
+import { TracingSearchType } from "../../interfaces/search";
+import { ObservationLevelType, TraceDomain } from "../../domain";
+import { ClickHouseClientConfigOptions } from "@clickhouse/client";
 
 export type TracesTableReturnType = Pick<
   TraceRecordReadType,
@@ -37,23 +37,26 @@ export type TracesTableReturnType = Pick<
   | "version"
   | "user_id"
   | "session_id"
+  | "environment"
   | "tags"
   | "public"
 >;
 
-export type TracesAllUiReturnType = {
-  id: string;
-  timestamp: Date;
-  name: string | null;
-  projectId: string;
-  userId: string | null;
-  release: string | null;
-  version: string | null;
-  public: boolean;
-  bookmarked: boolean;
-  sessionId: string | null;
-  tags: string[];
-};
+export type TracesTableUiReturnType = Pick<
+  TraceDomain,
+  | "id"
+  | "projectId"
+  | "timestamp"
+  | "tags"
+  | "bookmarked"
+  | "name"
+  | "release"
+  | "version"
+  | "userId"
+  | "environment"
+  | "sessionId"
+  | "public"
+>;
 
 export type TracesMetricsUiReturnType = {
   id: string;
@@ -62,7 +65,7 @@ export type TracesMetricsUiReturnType = {
   completionTokens: bigint;
   totalTokens: bigint;
   latency: number | null;
-  level: ObservationLevel;
+  level: ObservationLevelType;
   observationCount: bigint;
   calculatedTotalCost: Decimal | null;
   calculatedInputCost: Decimal | null;
@@ -70,11 +73,15 @@ export type TracesMetricsUiReturnType = {
   scores: ScoreAggregate;
   usageDetails: Record<string, number>;
   costDetails: Record<string, number>;
+  errorCount: bigint;
+  warningCount: bigint;
+  defaultCount: bigint;
+  debugCount: bigint;
 };
 
 export const convertToUiTableRows = (
   row: TracesTableReturnType,
-): TracesAllUiReturnType => {
+): TracesTableUiReturnType => {
   return {
     id: row.id,
     projectId: row.project_id,
@@ -85,6 +92,7 @@ export const convertToUiTableRows = (
     release: row.release ?? null,
     version: row.version ?? null,
     userId: row.user_id ?? null,
+    environment: row.environment ?? null,
     sessionId: row.session_id ?? null,
     public: row.public,
   };
@@ -125,6 +133,10 @@ export const convertToUITableMetrics = (
       ? new Decimal(row.cost_details.output)
       : null,
     level: row.level,
+    debugCount: BigInt(row.debug_count ?? 0),
+    warningCount: BigInt(row.warning_count ?? 0),
+    errorCount: BigInt(row.error_count ?? 0),
+    defaultCount: BigInt(row.default_count ?? 0),
   };
 };
 
@@ -132,12 +144,16 @@ export type TracesTableMetricsClickhouseReturnType = {
   id: string;
   project_id: string;
   timestamp: Date;
-  level: ObservationLevel;
+  level: ObservationLevelType;
   observation_count: number | null;
   latency: string | null;
   usage_details: Record<string, number>;
   cost_details: Record<string, number>;
   scores_avg: Array<{ name: string; avg_value: number }>;
+  error_count: number | null;
+  warning_count: number | null;
+  default_count: number | null;
+  debug_count: number | null;
 };
 
 export type FetchTracesTableProps = {
@@ -145,21 +161,26 @@ export type FetchTracesTableProps = {
   projectId: string;
   filter: FilterState;
   searchQuery?: string;
+  searchType?: TracingSearchType[];
   orderBy?: OrderByState;
   limit?: number;
   page?: number;
+  clickhouseConfigs?: ClickHouseClientConfigOptions | undefined;
+  tags?: Record<string, string>;
 };
 
 export const getTracesTableCount = async (props: {
   projectId: string;
   filter: FilterState;
   searchQuery?: string;
+  searchType: TracingSearchType[];
   orderBy?: OrderByState;
   limit?: number;
   page?: number;
 }) => {
   const countRows = await getTracesTableGeneric<{ count: string }>({
     select: "count",
+    tags: { kind: "count" },
     ...props,
   });
 
@@ -177,40 +198,66 @@ export const getTracesTableMetrics = async (props: {
   orderBy?: OrderByState;
   limit?: number;
   page?: number;
+  clickhouseConfigs?: ClickHouseClientConfigOptions | undefined;
 }): Promise<Array<Omit<TracesMetricsUiReturnType, "scores">>> => {
   const countRows =
     await getTracesTableGeneric<TracesTableMetricsClickhouseReturnType>({
       select: "metrics",
+      tags: { kind: "analytic" },
       ...props,
     });
 
   return countRows.map(convertToUITableMetrics);
 };
 
-export const getTracesTable = async (
-  projectId: string,
-  filter: FilterState,
-  searchQuery?: string,
-  orderBy?: OrderByState,
-  limit?: number,
-  page?: number,
-) => {
-  const rows = await getTracesTableGeneric<TracesTableReturnType>({
-    select: "rows",
+export const getTracesTable = async (p: {
+  projectId: string;
+  filter: FilterState;
+  searchQuery?: string;
+  searchType?: TracingSearchType[];
+  orderBy?: OrderByState;
+  limit?: number;
+  page?: number;
+  clickhouseConfigs?: ClickHouseClientConfigOptions | undefined;
+}) => {
+  const {
     projectId,
     filter,
     searchQuery,
+    searchType,
     orderBy,
     limit,
     page,
+    clickhouseConfigs,
+  } = p;
+  const rows = await getTracesTableGeneric<TracesTableReturnType>({
+    select: "rows",
+    tags: { kind: "list" },
+    projectId,
+    filter,
+    searchQuery,
+    searchType,
+    orderBy,
+    limit,
+    page,
+    clickhouseConfigs,
   });
 
   return rows.map(convertToUiTableRows);
 };
 
 const getTracesTableGeneric = async <T>(props: FetchTracesTableProps) => {
-  const { select, projectId, filter, orderBy, limit, page, searchQuery } =
-    props;
+  const {
+    select,
+    projectId,
+    filter,
+    orderBy,
+    limit,
+    page,
+    searchQuery,
+    searchType,
+    clickhouseConfigs,
+  } = props;
 
   let sqlSelect: string;
   switch (select) {
@@ -225,9 +272,14 @@ const getTracesTableGeneric = async <T>(props: FetchTracesTableProps) => {
         os.latency_milliseconds / 1000 as latency,
         os.cost_details as cost_details,
         os.usage_details as usage_details,
-        os.level as level,
+        os.aggregated_level as level,
+        os.error_count as error_count,
+        os.warning_count as warning_count,
+        os.default_count as default_count,
+        os.debug_count as debug_count,
         os.observation_count as observation_count,
         s.scores_avg as scores_avg,
+        s.score_categories as score_categories,
         t.public as public`;
       break;
     case "rows":
@@ -241,11 +293,11 @@ const getTracesTableGeneric = async <T>(props: FetchTracesTableProps) => {
         t.release as release,
         t.version as version,
         t.user_id as user_id,
+        t.environment as environment,
         t.session_id as session_id,
         t.public as public`;
       break;
     default:
-      const exhaustiveCheckDefault: never = select;
       throw new Error(`Unknown select type: ${select}`);
   }
 
@@ -313,7 +365,7 @@ const getTracesTableGeneric = async <T>(props: FetchTracesTableProps) => {
   const scoresFilterRes = scoresFilter.apply();
   const observationFilterRes = observationsFilter.apply();
 
-  const search = clickhouseSearchCondition(searchQuery);
+  const search = clickhouseSearchCondition(searchQuery, searchType);
 
   const defaultOrder = orderBy?.order && orderBy?.column === "timestamp";
   const orderByCols = [
@@ -322,19 +374,29 @@ const getTracesTableGeneric = async <T>(props: FetchTracesTableProps) => {
       clickhouseSelect: "toDate(t.timestamp)",
       uiTableName: "timestamp_to_date",
       uiTableId: "timestamp_to_date",
-      clickhouseTableName: "observations",
+      clickhouseTableName: "traces",
+    },
+    {
+      clickhouseSelect: "t.event_ts",
+      uiTableName: "event_ts",
+      uiTableId: "event_ts",
+      clickhouseTableName: "traces",
     },
   ];
   const chOrderBy = orderByToClickhouseSql(
     [
       defaultOrder
-        ? {
-            column: "timestamp_to_date",
-            order: orderBy.order,
-          }
+        ? [
+            {
+              column: "timestamp_to_date",
+              order: orderBy.order,
+            },
+            { column: "timestamp", order: orderBy.order },
+            { column: "event_ts", order: "DESC" as "DESC" },
+          ]
         : null,
       orderBy ?? null,
-    ],
+    ].flat(),
     orderByCols,
   );
 
@@ -342,7 +404,7 @@ const getTracesTableGeneric = async <T>(props: FetchTracesTableProps) => {
   // - we only join scores and observations if we really need them to speed up default views
   // - we use FINAL on traces only in case we not need to order by something different than time. Otherwise we cannot guarantee correct reads.
   // - we filter the observations and scores as much as possible before joining them to traces.
-  // - we order by todate(timestamp), timestamp per default and do not use FINAL.
+  // - we order by todate(timestamp), event_ts desc per default and do not use FINAL.
   //   In this case, CH is able to read the data only from the latest date from disk and filtering them in memory. No need to read all data e.g. for 1 month from disk.
 
   const query = `
@@ -351,13 +413,17 @@ const getTracesTableGeneric = async <T>(props: FetchTracesTableProps) => {
         COUNT(*) AS observation_count,
           sumMap(usage_details) as usage_details,
           SUM(total_cost) AS total_cost,
-          date_diff('milliseconds', least(min(start_time), min(end_time)), greatest(max(start_time), max(end_time))) as latency_milliseconds,
+          date_diff('millisecond', least(min(start_time), min(end_time)), greatest(max(start_time), max(end_time))) as latency_milliseconds,
+          countIf(level = 'ERROR') as error_count,
+          countIf(level = 'WARNING') as warning_count,
+          countIf(level = 'DEFAULT') as default_count,
+          countIf(level = 'DEBUG') as debug_count,
           multiIf(
             arrayExists(x -> x = 'ERROR', groupArray(level)), 'ERROR',
             arrayExists(x -> x = 'WARNING', groupArray(level)), 'WARNING',
             arrayExists(x -> x = 'DEFAULT', groupArray(level)), 'DEFAULT',
             'DEBUG'
-          ) AS level,
+          ) AS aggregated_level,
           sumMap(cost_details) as cost_details,
           trace_id,
           project_id
@@ -371,19 +437,35 @@ const getTracesTableGeneric = async <T>(props: FetchTracesTableProps) => {
       SELECT
         project_id,
         trace_id,
-        groupArray(tuple(name, avg_value)) AS "scores_avg"
+        -- For numeric scores, use tuples of (name, avg_value)
+        groupArrayIf(
+          tuple(name, avg_value),
+          data_type IN ('NUMERIC', 'BOOLEAN')
+        ) AS scores_avg,
+        -- For categorical scores, use name:value format for improved query performance
+        groupArrayIf(
+          concat(name, ':', string_value),
+          data_type = 'CATEGORICAL' AND notEmpty(string_value)
+        ) AS score_categories
       FROM (
-        SELECT project_id,
-                trace_id,
-                name,
-                avg(value) avg_value
+        SELECT 
+          project_id,
+          trace_id,
+          name,
+          data_type,
+          string_value,
+          avg(value) as avg_value
         FROM scores s FINAL 
-        WHERE project_id = {projectId: String}
-        ${timeStampFilter ? `AND s.timestamp >= {traceTimestamp: DateTime64(3)} - ${SCORE_TO_TRACE_OBSERVATIONS_INTERVAL}` : ""}
-        ${scoresFilterRes ? `AND ${scoresFilterRes.query}` : ""}
-        GROUP BY project_id,
-                  trace_id,
-                  name
+        WHERE 
+          project_id = {projectId: String}
+          ${timeStampFilter ? `AND s.timestamp >= {traceTimestamp: DateTime64(3)} - ${SCORE_TO_TRACE_OBSERVATIONS_INTERVAL}` : ""}
+          ${scoresFilterRes ? `AND ${scoresFilterRes.query}` : ""}
+        GROUP BY 
+          project_id,
+          trace_id,
+          name,
+          data_type,
+          string_value
       ) tmp
       GROUP BY project_id, trace_id
     )
@@ -414,6 +496,13 @@ const getTracesTableGeneric = async <T>(props: FetchTracesTableProps) => {
       ...scoresFilterRes.params,
       ...search.params,
     },
+    tags: {
+      ...(props.tags ?? {}),
+      feature: "tracing",
+      type: "traces-table",
+      projectId,
+    },
+    clickhouseConfigs,
   });
 
   return res;

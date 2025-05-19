@@ -42,10 +42,14 @@ export default async function handler(
     ).verifyAuthHeaderAndReturnScope(req.headers.authorization);
 
     if (!authCheck.validKey) throw new UnauthorizedError(authCheck.error);
-    if (authCheck.scope.accessLevel !== "all")
+    if (
+      authCheck.scope.accessLevel !== "project" ||
+      !authCheck.scope.projectId
+    ) {
       throw new ForbiddenError(
-        `Access denied - need to use basic auth with secret key to ${req.method} prompts`,
+        `Access denied: Bearer auth and org api keys are not allowed to access`,
       );
+    }
 
     await telemetry();
 
@@ -56,10 +60,11 @@ export default async function handler(
       const promptName = searchParams.name;
       const version = searchParams.version ?? undefined;
 
-      const rateLimitCheck = await new RateLimitService(redis).rateLimitRequest(
-        authCheck.scope,
-        "prompts",
-      );
+      const rateLimitCheck =
+        await RateLimitService.getInstance().rateLimitRequest(
+          authCheck.scope,
+          "prompts",
+        );
 
       if (rateLimitCheck?.isRateLimited()) {
         return rateLimitCheck.sendRestResponseIfLimited(res);
